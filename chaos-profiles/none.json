@@ -1,0 +1,5 @@
+{
+  "formatVersion": 1,
+  "name": "none",
+  "description": "No faults: every event is delivered exactly once, in canonical order, at its event time."
+}

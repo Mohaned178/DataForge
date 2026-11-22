@@ -35,9 +35,21 @@ importers:
 
   apps/cli:
     dependencies:
+      '@dataforge/chaos':
+        specifier: workspace:*
+        version: link:../../packages/chaos
       '@dataforge/core':
         specifier: workspace:*
         version: link:../../packages/core
+      zod:
+        specifier: 4.6.7
+        version: 4.6.7
+
+  packages/chaos:
+    dependencies:
+      '@dataforge/core':
+        specifier: workspace:*
+        version: link:../core
       zod:
         specifier: 4.6.7
         version: 4.6.7

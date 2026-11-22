@@ -4,7 +4,8 @@
     "types": ["node", "jest"],
     "noEmit": true,
     "paths": {
-      "@dataforge/core": ["../../packages/core/src/index.ts"]
+      "@dataforge/core": ["../../packages/core/src/index.ts"],
+      "@dataforge/chaos": ["../../packages/chaos/src/index.ts"]
     }
   },
   "include": ["src", "test"]

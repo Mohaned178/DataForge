@@ -1,0 +1,15 @@
+{
+  "formatVersion": 1,
+  "name": "lossy",
+  "description": "Frequent transient failures; an event that fails more often than it is retried is lost (loss allowed).",
+  "faults": {
+    "duplicate": { "rate": 0.05, "copies": { "min": 1, "max": 1 }, "redeliveryOffsetMs": { "min": 0, "max": 60000 } },
+    "transientFailure": {
+      "rate": 0.1,
+      "failures": { "min": 1, "max": 4 },
+      "maxRetries": 2,
+      "retryBackoffMs": { "min": 5000, "max": 60000 },
+      "allowLoss": true
+    }
+  }
+}

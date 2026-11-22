@@ -1,4 +1,3 @@
-import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import {
@@ -13,10 +12,9 @@ import {
   serializeEventLog,
   serializeExpectedState,
   simulate,
-  stripByteOrderMark,
   type ScenarioConfig,
 } from '@dataforge/core';
-import { EXIT_OK, EXIT_USAGE, UsageError, formatCount, padRight, type CliIo } from '../cli-io';
+import { EXIT_OK, EXIT_USAGE, UsageError, formatCount, padRight, readJsonFile, type CliIo } from '../cli-io';
 import {
   CHECKSUMMED_FILES,
   RUN_FILES,
@@ -50,7 +48,7 @@ export function runGenerate(args: readonly string[], io: CliIo): number {
   let scenario: ScenarioConfig;
   let seed: string;
   try {
-    scenario = parseScenario(readScenarioJson(scenarioPath));
+    scenario = parseScenario(readJsonFile(scenarioPath, 'scenario'));
     seed = normalizeSeed(values.seed);
   } catch (error) {
     if (error instanceof ScenarioValidationError || error instanceof InvalidSeedError) {
@@ -107,18 +105,4 @@ export function runGenerate(args: readonly string[], io: CliIo): number {
   io.out(`              ${RUN_FILES.manifest}`);
   io.out(`  done in ${elapsedMs} ms`);
   return EXIT_OK;
-}
-
-function readScenarioJson(path: string): unknown {
-  let text: string;
-  try {
-    text = readFileSync(path, 'utf8');
-  } catch {
-    throw new UsageError(`Cannot read scenario file: ${path}`);
-  }
-  try {
-    return JSON.parse(stripByteOrderMark(text));
-  } catch (error) {
-    throw new UsageError(`Scenario file is not valid JSON (${path}): ${(error as Error).message}`);
-  }
 }

@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
-import { EVENT_TYPES, sha256Hex, type CanonicalEvent, type EventType } from '@dataforge/core';
+import { EVENT_TYPES, EventLogParseError, parseEventLog, sha256Hex, type CanonicalEvent, type EventType } from '@dataforge/core';
 import { UsageError } from './cli-io';
 
 export const RUN_FILES = {
@@ -14,7 +14,7 @@ export const RUN_FILES = {
 export const CHECKSUMMED_FILES = [RUN_FILES.events, RUN_FILES.expectedState, RUN_FILES.scenario] as const;
 export type ChecksummedFile = (typeof CHECKSUMMED_FILES)[number];
 
-const fileEntrySchema = z.strictObject({ sha256: z.string().regex(/^[0-9a-f]{64}$/), bytes: z.number().int().min(0) });
+export const fileEntrySchema = z.strictObject({ sha256: z.string().regex(/^[0-9a-f]{64}$/), bytes: z.number().int().min(0) });
 
 export const runManifestSchema = z.strictObject({
   format: z.literal('dataforge.simulation-run'),
@@ -51,13 +51,13 @@ export function countEventsByType(events: readonly CanonicalEvent[]): Record<Eve
 }
 
 /** Creates the output directory, refusing to mix a new run into a non-empty directory unless forced. */
-export function prepareOutputDirectory(directory: string, force: boolean): void {
+export function prepareOutputDirectory(directory: string, force: boolean, files = 'run files'): void {
   if (existsSync(directory)) {
     if (!statSync(directory).isDirectory()) {
       throw new UsageError(`Output path exists and is not a directory: ${directory}`);
     }
     if (readdirSync(directory).length > 0 && !force) {
-      throw new UsageError(`Output directory is not empty: ${directory}\nUse --force to overwrite the run files in it.`);
+      throw new UsageError(`Output directory is not empty: ${directory}\nUse --force to overwrite the ${files} in it.`);
     }
     return;
   }
@@ -94,4 +94,30 @@ export function readManifest(directory: string): RunManifest {
     throw new UsageError(`${RUN_FILES.manifest} is invalid: ${issue?.path.map(String).join('.') ?? ''} ${issue?.message ?? ''}`);
   }
   return result.data;
+}
+
+/**
+ * Loads the canonical log of a run for a command that builds on it (chaos planning, explanations).
+ * The log must match the checksum in manifest.json, so nothing is ever planned from an edited log.
+ */
+export function readIntactCanonicalLog(directory: string, manifest: RunManifest): { text: string; events: CanonicalEvent[] } {
+  const text = readRunFile(directory, RUN_FILES.events);
+  if (text === undefined) {
+    throw new UsageError(`${RUN_FILES.events} not found in ${directory}`);
+  }
+  if (sha256Hex(text) !== manifest.files[RUN_FILES.events].sha256) {
+    throw new UsageError(
+      `${RUN_FILES.events} in ${directory} does not match the checksum in ${RUN_FILES.manifest}: the run was modified.
+` +
+        'Run "dataforge verify --run <directory>" for details, or regenerate it.',
+    );
+  }
+  try {
+    return { text, events: parseEventLog(text) };
+  } catch (error) {
+    if (error instanceof EventLogParseError) {
+      throw new UsageError(error.message);
+    }
+    throw error;
+  }
 }

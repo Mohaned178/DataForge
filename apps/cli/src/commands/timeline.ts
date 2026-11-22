@@ -46,7 +46,7 @@ export function runTimeline(args: readonly string[], io: CliIo): number {
     io.out(
       `  ${padRight(String(event.aggregateVersion), 4)} ${padRight(String(event.sequence), 8)} ` +
         `${padRight(simTimeToIso(epochUnixMs, event.eventTimeMs), 25)} ${padRight(formatSimTime(event.eventTimeMs), 18)} ` +
-        `${padRight(event.type, 19)} ${describe(event)}`,
+        `${padRight(event.type, 19)} ${describeEvent(event)}`,
     );
   }
   return EXIT_OK;
@@ -64,7 +64,8 @@ export function formatSimTime(simTimeMs: number): string {
   return `${days}d ${two(hours)}:${two(minutes)}:${two(seconds)}.${String(millis).padStart(3, '0')}`;
 }
 
-function describe(event: CanonicalEvent): string {
+/** One line of the event's business details, for timelines and explanations. */
+export function describeEvent(event: CanonicalEvent): string {
   switch (event.type) {
     case 'ProductCreated':
       return `${event.payload.sku} "${event.payload.name}" price=${event.payload.priceMinor} ${event.payload.currency}`;

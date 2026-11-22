@@ -29,3 +29,5 @@ jobs:
       - run: pnpm build
       - run: pnpm dataforge generate --scenario scenarios/ecommerce-small.json --seed 42 --out out/ci
       - run: pnpm dataforge verify --run out/ci
+      - run: pnpm dataforge chaos plan --run out/ci --profile chaos-profiles/flaky-network.json --chaos-seed 7 --out out/ci-plan
+      - run: pnpm dataforge explain --run out/ci --plan out/ci-plan --event evt_ord_000088_2

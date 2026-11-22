@@ -9,7 +9,7 @@ whenever implementation changes the plan. The workflow is driven by the `/datafo
 | # | Milestone | Status |
 | --- | --- | --- |
 | 1 | Deterministic simulation core + CLI | **Approved 2026-11-22** |
-| 2 | Chaos delivery planner | Planned |
+| 2 | Chaos delivery planner | **Approved 2026-11-22** |
 | 3 | Validation engine + reference targets (offline end-to-end) | Planned |
 | 4 | Kafka delivery + out-of-process target | Planned |
 | 5 | Event-time windows and late data | Planned |
@@ -86,30 +86,102 @@ the canonical log (ADR-0004; decided 2026-11-22).
 
 ## Milestone 2: Chaos delivery planner
 
-**Objective.** Turn a canonical log plus a fault profile plus a chaos seed into a deterministic,
-explainable delivery plan, without changing the canonical log.
+**Objective.** Turn a canonical log, a chaos profile and a chaos seed into a deterministic,
+explainable delivery plan: which delivery attempts happen, when, in what order, with which faults,
+and with what planned outcome. The canonical log is never changed.
 
 **Included.**
 
-- Fault profile schema: delay (rate, delay range), duplicate (rate, copies, re-delivery offset),
-  reorder (rate, how far behind later events of the same aggregate), transient delivery failure
-  (rate, retry backoff, max retries; exhausted retries = loss, opt-in).
-- Delivery attempt model: `attemptId`, `eventId`, `attemptNumber`, `kind`
-  (original/duplicate/retry), `scheduledDeliveryTimeMs`, planned outcome, applied faults.
-- `delivery-plan.jsonl` + summary; CLI `dataforge chaos plan` and `dataforge explain --event <id>`.
+- `@dataforge/chaos` (new package, deterministic and I/O-free like the core, same ESLint guard):
+  - chaos profile schema (Zod) with four fault types, each disabled by default (`rate: 0`):
+    - `delay`: rate, `delayMs` range; adds the drawn delay to the original attempt.
+    - `reorder`: rate, `distance` range k; the original attempt is delivered just after the k-th
+      later event of the same aggregate (k clamped to the events that exist). Guarantees a
+      per-aggregate inversion.
+    - `duplicate`: rate, `copies` range, `redeliveryOffsetMs` range; extra copies of the first
+      successful attempt, same `eventId`, new `attemptId`.
+    - `transientFailure`: rate, `failures` range, `maxRetries`, `retryBackoffMs` range,
+      `allowLoss`. The first `failures` attempts fail and each is retried after a backoff; when
+      `failures > maxRetries` the event is lost, which is only possible with `allowLoss: true`.
+  - delivery attempt model: `attemptId`, `deliverySequence`, `attemptNumber`, `kind`
+    (`original`, `retry`, `duplicate`), `scheduledDeliveryTimeMs`, `plannedOutcome` (`delivered`,
+    `failed`), `derivedFrom` (the attempt a retry or duplicate follows, with its offset), `faults`
+    (structured records), plus the event's identity and position.
+  - planner (`planDelivery`), summary (configured versus observed rates, losses, per-aggregate
+    inversions), `delivery-plan.jsonl` serialization and parsing, and `explainEvent`.
+- CLI: `dataforge chaos plan --run <dir> --profile <file> --chaos-seed <seed> --out <dir>` writes
+  `delivery-plan.jsonl`, `chaos-profile.resolved.json` and `delivery-summary.json` (with checksums
+  and the SHA-256 of the canonical log the plan belongs to). `dataforge explain --run <dir> --plan
+  <dir> --event <eventId>` prints the event, every attempt, the faults behind it and its order within
+  its aggregate.
+- Example profiles in `chaos-profiles/`: `none`, `spec-example` (5% delay, 3% duplicate, 2%
+  reorder), `flaky-network` (all four faults, no loss), `lossy` (loss allowed).
 
-**Decisions to make.** Chaos seed independent of the simulation seed (same world, many fault
-patterns); fault selection keyed by `(chaos seed, fault type, eventId)` so enabling one fault type
-does not reshuffle others; precise definition of "reorder" versus reordering caused by delay; whether
-loss is allowed by default.
+**Architectural decisions** (ADR-0007).
 
-**Automated tests.** Determinism; canonical log unchanged (hash before and after; frozen objects);
-observed fault rates within tolerance (deterministic, so not flaky); duplicates keep the `eventId`
-and get distinct `attemptId`s; each reorder fault produces a per-aggregate inversion; a zero-fault
-profile yields canonical order; every attempt is explainable.
+| Question | Options | Choice |
+| --- | --- | --- |
+| Chaos seed | derived from the simulation seed; independent | **Independent.** One world, many fault patterns; the plan records both seeds. |
+| Fault selection | one stream for the whole plan; one stream per (chaos seed, fault type, eventId) | **Per (seed, fault type, eventId)**, with the selection drawn first. Enabling one fault type does not reshuffle another, and raising a rate only adds faulted events. |
+| Reorder versus delay | reorder as a random swap with a neighbour in delivery order; reorder anchored after a later event of the same aggregate | **Anchored.** A delay may or may not cause an inversion; a reorder always does, and both are reported separately. |
+| Loss | allowed by default; opt-in | **Opt-in** (`allowLoss`). Without it, a profile that could exhaust retries is rejected. |
+| Delivery order | by time only; by time with a total tie-break | **(scheduledDeliveryTimeMs, eventSequence, attemptNumber)**, so a zero-fault plan is exactly canonical order. |
+| Where the plan lives | inside the run directory; its own directory bound to the run by hash | **Own directory**, bound by the canonical log's SHA-256, so the canonical run stays untouched and one run can have many plans. |
 
-**Acceptance criteria.** Same log + profile + chaos seed produces a byte-identical plan; a different
-chaos seed changes the plan but never `events.jsonl`.
+**Dependencies.** `@dataforge/core`: `CanonicalEvent`, `RandomStream`, `normalizeSeed`,
+`canonicalJson`, `serializeEventLog`, `sha256Hex`. CLI: the run directory and its manifest.
+
+**Code and documentation changes.** New `packages/chaos`; CLI commands `chaos plan` and `explain`;
+ESLint guard extended to `packages/chaos/src`; Jest mapping; `chaos-profiles/`; ADR-0007;
+`data-formats.md` (profile, plan, summary); `ARCHITECTURE.md`; README; manual verification guide and
+self-check.
+
+**Automated tests.** Profile validation (defaults, unknown fields, paths, loss rule); byte-level
+determinism; canonical log unchanged (hash before and after, frozen events); a different chaos seed
+changes the plan; observed rates within tolerance on the specification-sized scenario; fault-type
+isolation and monotonic rates; duplicates keep the `eventId` and get distinct `attemptId`s; every
+reorder fault produces a per-aggregate inversion; zero-fault plan equals canonical order; retries,
+backoff and loss; every attempt's time is explained by its recorded faults; plan JSONL round trip;
+golden plan hash; CLI behaviour, exit codes, tampering and mismatched-run detection.
+
+**Acceptance criteria.**
+
+- Same log, profile and chaos seed produce byte-identical `delivery-plan.jsonl`,
+  `chaos-profile.resolved.json` and `delivery-summary.json`.
+- A different chaos seed changes the plan, never `events.jsonl`; the run still passes
+  `dataforge verify`.
+- A zero-fault profile yields exactly one delivered original attempt per event, in canonical order,
+  at event time.
+- Duplicates keep the `eventId` and get distinct `attemptId`s; each reorder fault produces a
+  per-aggregate inversion; events are lost only when the profile allows loss.
+- Observed fault rates on the specification-sized scenario are within 0.5 percentage points of
+  the configured rates.
+- Enabling one fault type does not change which events another fault type selects.
+- `explain` accounts for every attempt of an event: time, kind, faults, outcome, aggregate order.
+- Invalid profiles and chaos seeds are rejected with the path of each problem; a plan whose files
+  were edited, or that belongs to a different run, is refused.
+
+**Manual verification.** `docs/manual-verification/milestone-2.md` (MV-2.1 to MV-2.13: the spec's
+example plan, determinism by checksum, a different chaos seed over the same world, the zero-fault
+baseline, duplicates, reorders, retries and loss, fault-type isolation, rates at the spec's example
+size, invalid input, edited and mismatched runs and plans, the determinism guard). Self-check:
+`scripts/verification/milestone-2.ps1`, 13 of 13 cases passing in PowerShell 7.6 and 12 of 12 in
+Windows PowerShell 5.1 (`-SkipInstall`) on 2026-11-22.
+
+**Implementation notes.** A reorder waits for the next event of its aggregate, so it can hold an
+event back for hours of simulation time (ADR-0007). The Milestone 1 commit had accidentally tracked
+`outmvrun-a/`, a copy of the seed-42 run (`out\mv\run-a` with its backslashes lost); it is
+removed.
+
+**Product-owner decisions** (2026-11-22, the recommendations accepted):
+
+- D-2.1: loss stays opt-in. `allowLoss` is false by default, and a profile that could lose events
+  without it is rejected (ADR-0007, decision 6).
+- D-2.2: a reorder stays unbounded. It waits for the next event of its aggregate however long that
+  takes; a maximum wait may be added later as an optional setting that leaves existing plans
+  unchanged (ADR-0007, decision 5).
+
+**Approved** 2026-11-22.
 
 ---
 
@@ -216,5 +288,6 @@ None at the moment.
 | KafkaJS has had no release since 2.2.4 (February 2023). | Compatibility with current Kafka, unfixed bugs. | Keep Kafka behind a narrow delivery port; in Milestone 4 spike KafkaJS against the pinned broker and compare with `@confluentinc/kafka-javascript` (Confluent-supported, KafkaJS-compatible API, native) and `@platformatic/kafka` (pure TypeScript). Decide with evidence. |
 | TypeScript 7 is current, but ts-jest and typescript-eslint do not support it yet. | Toolchain lock-in. | Pinned to TypeScript 6.0.3 (ADR-0005). Revisit when both support 7. |
 | Prisma `latest` is a release candidate. | Unstable persistence layer. | Pin a stable 7.x in Milestone 6 unless 8.0 is final by then. |
-| Docker Desktop is installed but its engine was not running during Milestone 1. | Blocks Milestones 4 and 6. | Start Docker Desktop before Milestone 4. Milestones 1-3 need no infrastructure. |
+| Docker Desktop is installed but its engine was not running during Milestones 1-2. | Blocks Milestones 4 and 6. | Start Docker Desktop before Milestone 4. Milestones 1-3 need no infrastructure. |
+| Plans are built in memory (about 19,000 attempts for the spec-sized scenario, planned in about 0.4 s). | Memory use near the scenario limits (100,000 orders, a few hundred thousand attempts). | Profile with generation in Milestone 10. |
 | In-memory generation. | Memory use near the scenario limits. | Limits enforced by the schema; profile in Milestone 10 before optimizing. |

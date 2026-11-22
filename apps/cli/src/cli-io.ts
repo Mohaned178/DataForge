@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import { stripByteOrderMark } from '@dataforge/core';
+
 export interface CliIo {
   out(line?: string): void;
   err(line?: string): void;
@@ -27,4 +30,20 @@ export function formatCount(value: number): string {
 
 export function padRight(text: string, width: number): string {
   return text.length >= width ? text : text + ' '.repeat(width - text.length);
+}
+
+/** Reads a JSON input file (a UTF-8 BOM, as written by Windows PowerShell 5.1, is accepted). */
+export function readJsonFile(path: string, label: string): unknown {
+  let text: string;
+  try {
+    text = readFileSync(path, 'utf8');
+  } catch {
+    throw new UsageError(`Cannot read ${label} file: ${path}`);
+  }
+  try {
+    return JSON.parse(stripByteOrderMark(text));
+  } catch (error) {
+    const title = label.charAt(0).toUpperCase() + label.slice(1);
+    throw new UsageError(`${title} file is not valid JSON (${path}): ${(error as Error).message}`);
+  }
 }

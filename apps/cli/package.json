@@ -2,7 +2,7 @@
   "name": "@dataforge/cli",
   "version": "0.1.0",
   "private": true,
-  "description": "Command-line interface for generating and verifying DataForge simulation runs.",
+  "description": "Command-line interface for generating, verifying and chaos-planning DataForge simulation runs.",
   "main": "./dist/main.js",
   "bin": {
     "dataforge": "./dist/main.js"
@@ -13,6 +13,7 @@
     "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\""
   },
   "dependencies": {
+    "@dataforge/chaos": "workspace:*",
     "@dataforge/core": "workspace:*",
     "zod": "4.6.7"
   }

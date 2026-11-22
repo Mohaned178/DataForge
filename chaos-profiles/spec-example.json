@@ -1,0 +1,10 @@
+{
+  "formatVersion": 1,
+  "name": "spec-example",
+  "description": "The example from the product specification: 5% delayed, 3% duplicated, 2% out-of-order deliveries.",
+  "faults": {
+    "delay": { "rate": 0.05, "delayMs": { "min": 1000, "max": 300000 } },
+    "duplicate": { "rate": 0.03, "copies": { "min": 1, "max": 1 }, "redeliveryOffsetMs": { "min": 0, "max": 60000 } },
+    "reorder": { "rate": 0.02, "distance": { "min": 1, "max": 2 } }
+  }
+}

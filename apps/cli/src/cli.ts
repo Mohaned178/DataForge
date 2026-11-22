@@ -1,5 +1,8 @@
 import { ENGINE_VERSION } from '@dataforge/core';
+import { PLANNER_VERSION } from '@dataforge/chaos';
 import { EXIT_OK, EXIT_USAGE, UsageError, type CliIo } from './cli-io';
+import { CHAOS_PLAN_USAGE, runChaos } from './commands/chaos-plan';
+import { EXPLAIN_USAGE, runExplain } from './commands/explain';
 import { GENERATE_USAGE, runGenerate } from './commands/generate';
 import { TIMELINE_USAGE, runTimeline } from './commands/timeline';
 import { VERIFY_USAGE, runVerify } from './commands/verify';
@@ -8,10 +11,12 @@ const COMMANDS: Record<string, (args: readonly string[], io: CliIo) => number> =
   generate: runGenerate,
   verify: runVerify,
   timeline: runTimeline,
+  chaos: runChaos,
+  explain: runExplain,
 };
 
 const HELP = [
-  `DataForge CLI (engine ${ENGINE_VERSION})`,
+  `DataForge CLI (engine ${ENGINE_VERSION}, planner ${PLANNER_VERSION})`,
   '',
   'Commands:',
   `  ${GENERATE_USAGE}`,
@@ -20,6 +25,10 @@ const HELP = [
   '      Re-check a run: checksums, event schema, business rules, expected state and reproducibility.',
   `  ${TIMELINE_USAGE}`,
   '      Print every event of one aggregate in canonical order.',
+  `  ${CHAOS_PLAN_USAGE}`,
+  '      Plan how the events of a run are delivered under a chaos profile: delivery-plan.jsonl, delivery-summary.json.',
+  `  ${EXPLAIN_USAGE}`,
+  '      Show every delivery attempt of one event, the faults behind it and its order within its aggregate.',
   '',
   'Exit codes: 0 success, 1 check failed, 2 invalid input.',
 ];
