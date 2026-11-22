@@ -1,0 +1,29 @@
+{
+  "name": "dataforge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DataForge: a data pipeline chaos testing platform.",
+  "packageManager": "pnpm@11.23.0",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "lint": "eslint .",
+    "test": "jest",
+    "check": "pnpm typecheck && pnpm lint && pnpm test",
+    "clean": "pnpm -r clean",
+    "dataforge": "node apps/cli/dist/main.js"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/jest": "30.0.0",
+    "@types/node": "24.19.2",
+    "eslint": "10.15.0",
+    "jest": "30.5.2",
+    "ts-jest": "29.4.15",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.73.0"
+  }
+}

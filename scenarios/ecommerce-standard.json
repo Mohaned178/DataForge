@@ -1,0 +1,33 @@
+{
+  "formatVersion": 1,
+  "name": "ecommerce-standard",
+  "description": "The reference workload from the product specification: 1,000 customers and 5,000 orders over one week.",
+  "simulation": {
+    "epoch": "2026-01-01T00:00:00Z",
+    "durationMs": 604800000
+  },
+  "catalog": {
+    "productCount": 200,
+    "currency": "USD",
+    "priceMinor": { "min": 500, "max": 25000 }
+  },
+  "customers": { "count": 1000 },
+  "orders": {
+    "count": 5000,
+    "itemsPerOrder": { "min": 1, "max": 4 },
+    "quantityPerItem": { "min": 1, "max": 3 },
+    "customerCancellationRate": 0.05,
+    "customerCancellationDelayMs": { "min": 60000, "max": 3600000 },
+    "paymentDelayMs": { "min": 1000, "max": 600000 }
+  },
+  "payments": {
+    "failureRate": 0.1,
+    "maxAttempts": 3,
+    "retryDelayMs": { "min": 60000, "max": 1800000 },
+    "cancellationDelayMs": { "min": 1000, "max": 60000 }
+  },
+  "shipments": {
+    "fulfillmentDelayMs": { "min": 3600000, "max": 86400000 },
+    "deliveryDelayMs": { "min": 86400000, "max": 432000000 }
+  }
+}

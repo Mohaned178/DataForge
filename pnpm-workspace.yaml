@@ -1,0 +1,8 @@
+packages:
+  - packages/*
+  - apps/*
+
+# pnpm 11 refuses to install until every dependency build script is explicitly allowed or denied.
+# @parcel/watcher (Jest watch mode) ships prebuilt binaries; its script only compiles from source as a fallback.
+allowBuilds:
+  '@parcel/watcher': false

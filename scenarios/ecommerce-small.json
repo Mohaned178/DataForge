@@ -1,0 +1,33 @@
+{
+  "formatVersion": 1,
+  "name": "ecommerce-small",
+  "description": "A small store over two days. Fast to generate and easy to read by eye.",
+  "simulation": {
+    "epoch": "2026-01-01T00:00:00Z",
+    "durationMs": 172800000
+  },
+  "catalog": {
+    "productCount": 12,
+    "currency": "USD",
+    "priceMinor": { "min": 499, "max": 14999 }
+  },
+  "customers": { "count": 25 },
+  "orders": {
+    "count": 120,
+    "itemsPerOrder": { "min": 1, "max": 3 },
+    "quantityPerItem": { "min": 1, "max": 2 },
+    "customerCancellationRate": 0.08,
+    "customerCancellationDelayMs": { "min": 60000, "max": 3600000 },
+    "paymentDelayMs": { "min": 1000, "max": 600000 }
+  },
+  "payments": {
+    "failureRate": 0.2,
+    "maxAttempts": 3,
+    "retryDelayMs": { "min": 60000, "max": 1800000 },
+    "cancellationDelayMs": { "min": 1000, "max": 60000 }
+  },
+  "shipments": {
+    "fulfillmentDelayMs": { "min": 3600000, "max": 28800000 },
+    "deliveryDelayMs": { "min": 14400000, "max": 86400000 }
+  }
+}

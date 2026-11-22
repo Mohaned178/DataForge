@@ -1,0 +1,42 @@
+{
+  "counts": {
+    "events": 472,
+    "eventsByType": {
+      "CustomerRegistered": 25,
+      "OrderCancelled": 11,
+      "OrderCreated": 120,
+      "PaymentCompleted": 108,
+      "PaymentFailed": 29,
+      "ProductCreated": 12,
+      "ShipmentCreated": 98,
+      "ShipmentDelivered": 69
+    }
+  },
+  "engineVersion": "0.1.0",
+  "eventSchemaVersion": 1,
+  "files": {
+    "events.jsonl": {
+      "bytes": 146142,
+      "sha256": "01b57d640ab12e33702ccb72339fd00552e6b37b3fddce4dff7a5a8c0cca42de"
+    },
+    "expected-state.json": {
+      "bytes": 135526,
+      "sha256": "3546842d89241f81b31bd2bfaa11916fff0ee04cc400195a70b4c2e6beff2101"
+    },
+    "scenario.resolved.json": {
+      "bytes": 1145,
+      "sha256": "f642fb41261117d68dde26c14b0859b6fd01d898c1c3c0dc5fcf8354e1978714"
+    }
+  },
+  "format": "dataforge.simulation-run",
+  "formatVersion": 1,
+  "scenario": {
+    "hash": "sha256:3afbcf1ac2460a195a0e6306bd5ea1e1d3655b8d80f1d356958e60109e901158",
+    "name": "ecommerce-small"
+  },
+  "seed": "42",
+  "simulation": {
+    "durationMs": 172800000,
+    "epoch": "2026-01-01T00:00:00.000Z"
+  }
+}
