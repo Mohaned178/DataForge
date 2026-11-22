@@ -9,5 +9,7 @@ module.exports = {
   moduleNameMapper: {
     '^@dataforge/core$': '<rootDir>/packages/core/src/index.ts',
     '^@dataforge/chaos$': '<rootDir>/packages/chaos/src/index.ts',
+    '^@dataforge/validation$': '<rootDir>/packages/validation/src/index.ts',
+    '^@dataforge/targets$': '<rootDir>/packages/targets/src/index.ts',
   },
 };

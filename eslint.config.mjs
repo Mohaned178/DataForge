@@ -67,8 +67,9 @@ export default defineConfig(
     languageOptions: { sourceType: 'commonjs' },
   },
   {
-    // The chaos planner must be as deterministic as the simulation: same log, profile and seed, same plan.
-    files: ['packages/core/src/**/*.ts', 'packages/chaos/src/**/*.ts'],
+    // The chaos planner, validator and reference targets must be as deterministic as the simulation:
+    // same inputs, same plan, same actual state, same report.
+    files: ['packages/core/src/**/*.ts', 'packages/chaos/src/**/*.ts', 'packages/validation/src/**/*.ts', 'packages/targets/src/**/*.ts'],
     rules: {
       'no-restricted-properties': ['error', ...nondeterministicProperties],
       'no-restricted-syntax': ['error', ...nondeterministicSyntax],

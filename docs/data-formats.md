@@ -236,3 +236,124 @@ The observed rate of a fault is `faultedEvents / eligibleEvents`. `ordering` com
 first delivered attempt with the other events of its aggregate. An event is out of order when a
 later version of its aggregate reaches the target first. It counts whatever caused it (delay,
 reorder or retries). Lost events are left out.
+
+## Actual state (what a target reports; input to `dataforge validate --actual`)
+
+```jsonc
+{
+  "format": "dataforge.actual-state",
+  "formatVersion": 1,
+  "products":  [ ... ],   // same record shapes as expected-state.json
+  "customers": [ ... ],
+  "orders":    [ ... ],
+  "payments":  [ ... ],
+  "shipments": [ ... ]
+}
+```
+
+The contract a target hands back, whatever its technology: the five entity collections of the
+expected state, with exactly the same record fields (see above), in any order. There is no `summary`,
+`lastSequence` or `lastEventTimeMs`; the validator computes what it needs. Unknown fields, unknown
+enum values (`status`, `carrier`, reasons) and non-integer numbers are rejected with the path of each
+problem (`orders.3.status`), so a mapping mistake is an error instead of a silent mismatch. Business
+values are not checked by the format: a doubled amount or a negative counter is a validation
+finding. A record listed twice is accepted by the format and reported as `duplicate-record`. A UTF-8
+byte order mark is accepted.
+
+`dataforge deliver` writes it sorted by ID in canonical JSON, like `expected-state.json`.
+
+## Delivery directory (`dataforge deliver --out <dir>`)
+
+| File | Content |
+| --- | --- |
+| `actual-state.json` | The state the target ended in, in the actual-state format. |
+| `target-run.json` | Which target consumed which plan of which run, and what happened. |
+
+```jsonc
+{
+  "format": "dataforge.target-run",
+  "formatVersion": 1,
+  "target": { "name": "correct", "description": "idempotent by eventId, ..." },
+  "source": { "seed": "42", "scenarioName": "ecommerce-small", "eventsSha256": "01b57d64..." },
+  "plan": { "plannerVersion": "0.1.0", "chaosSeed": "7", "profile": { "name": "spec-example", "hash": "sha256:..." },
+            "planSha256": "0c08d623..." },                  // SHA-256 of delivery-plan.jsonl
+  "delivery": { "messages": 486, "distinctEvents": 472, "redeliveries": 14, "failedAttempts": 0 },
+  "counters": { "duplicatesIgnored": 14, "eventsParked": 11 },   // naive: { "updatesLost": 6 }
+  "parkedEventIds": [],                                     // received but never applied
+  "files": { "actual-state.json": { "sha256": "...", "bytes": 135176 } }
+}
+```
+
+`validate` uses it when it sits next to an `actual-state.json`: it refuses an actual state delivered
+from another run, refuses `--plan` when it is not the plan the target consumed, and reports
+(without refusing) an actual state edited since it was written.
+
+## Validation report (`dataforge validate --report <file>`)
+
+```jsonc
+{
+  "format": "dataforge.validation-report",
+  "formatVersion": 1,
+  "source": { "seed": "42", "scenarioName": "ecommerce-small", "eventsSha256": "01b57d64..." },
+  "target": { "name": "naive", "editedAfterDelivery": false },   // null without target-run.json
+  "plan": { "chaosSeed": "7", "profile": { ... }, "planSha256": "..." },  // null without --plan
+  "verdict": "FAIL",                                             // PASS exactly when there is no finding
+  "hints": true,                                                 // a plan was given
+  "checked": { "entities": { "order": { "expected": 120, "actual": 120 }, ... }, "invariants": 16 },
+  "counts": { "findings": 48, "byCategory": { "missing-entity": 0, ... }, "explained": 48, "unexplained": 0 },
+  "rootCauses": [ { "cause": { ...a delivery cause... }, "findings": 7 }, { "cause": null, "findings": 2 } ],
+  "findings": [
+    {
+      "category": "double-processing",
+      "entityType": "order",
+      "entityId": "ord_000018",
+      "check": "compare",                     // or "duplicate-record", or the ID of an invariant
+      "message": "amountPaidMinor is 7000, expected 3500 (2x); paymentAttempts is 3, expected 2",
+      "differences": [ { "field": "amountPaidMinor", "expected": 3500, "actual": 7000 }, ... ],
+      "causes": [
+        { "eventId": "evt_ord_000018_3", "eventType": "PaymentCompleted", "aggregateId": "ord_000018",
+          "aggregateVersion": 3, "faults": ["duplicate"], "deliveries": 2, "failedAttempts": 0,
+          "lost": false, "delayMs": null, "overtakenBy": [] }
+      ]
+    }
+  ]
+}
+```
+
+| Category | Meaning |
+| --- | --- |
+| `missing-entity` | Expected, but not in the actual state. |
+| `unexpected-entity` | In the actual state, but not expected. |
+| `duplicate-record` | The same ID listed more than once. |
+| `status-mismatch` | An order, payment or shipment ends in the wrong status. |
+| `field-mismatch` | Any other field differs, including a counter or amount below its expected value (a lost update). |
+| `double-processing` | A counter or amount above its expected value (`orderCount`, `totalPaidMinor`, `amountPaidMinor`, `paymentAttempts`, `failedPaymentAttempts`), or an invariant that only double processing breaks (`order.paid-within-total`, `order.single-completed-payment`). |
+| `referential-integrity` | A reference to an entity that does not exist (order to customer or product, payment or shipment to order, order to shipment). |
+| `invariant-violation` | The actual state contradicts itself (status against payments or shipment, counters against records, totals against lines). |
+
+Findings are sorted by entity type, entity ID, category and check. `causes` are the abnormal
+deliveries (any fault, not exactly one delivery, or overtaken within the aggregate) of the events the
+entity depends on, most likely first; an empty list with `hints: true` means no delivery fault
+explains the finding. `rootCauses` groups findings by their first cause. The report contains no
+timestamps or paths, so it is reproducible byte for byte.
+
+### State invariants
+
+| ID | Category | Property |
+| --- | --- | --- |
+| `ref.order-customer` | referential-integrity | An order references an existing customer. |
+| `ref.order-products` | referential-integrity | Every order line references an existing product. |
+| `ref.order-shipment` | referential-integrity | An order's `shipmentId` references an existing shipment of that order. |
+| `ref.payment-order` | referential-integrity | A payment references an existing order. |
+| `ref.shipment-order` | referential-integrity | A shipment references an existing order. |
+| `order.paid-within-total` | double-processing | An order is never paid more than its total. |
+| `order.single-completed-payment` | double-processing | An order has at most one completed payment. |
+| `order.total-matches-lines` | invariant-violation | The total equals the sum of quantity x unit price. |
+| `order.paid-status` | invariant-violation | PAID, SHIPPED or DELIVERED exactly when a payment is completed, and then paid in full. |
+| `order.shipment-status` | invariant-violation | A shipment exactly when SHIPPED or DELIVERED; DELIVERED exactly when the shipment is. |
+| `order.payment-counters` | invariant-violation | `paymentAttempts` and `failedPaymentAttempts` count the payment records. |
+| `order.cancellation` | invariant-violation | A cancellation reason exactly when CANCELLED. |
+| `payment.amount-matches-order` | invariant-violation | Every payment charges the order total. |
+| `shipment.delivered-time` | invariant-violation | A delivery time exactly when DELIVERED. |
+| `customer.order-count` | invariant-violation | `orderCount` is the number of the customer's orders. |
+| `customer.total-paid` | invariant-violation | `totalPaidMinor` is the sum paid on the customer's orders. |

@@ -10,7 +10,7 @@ whenever implementation changes the plan. The workflow is driven by the `/datafo
 | --- | --- | --- |
 | 1 | Deterministic simulation core + CLI | **Approved 2026-11-22** |
 | 2 | Chaos delivery planner | **Approved 2026-11-22** |
-| 3 | Validation engine + reference targets (offline end-to-end) | Planned |
+| 3 | Validation engine + reference targets (offline end-to-end) | **Approved 2026-11-22** |
 | 4 | Kafka delivery + out-of-process target | Planned |
 | 5 | Event-time windows and late data | Planned |
 | 6 | Persistence (PostgreSQL + Prisma) + API foundation (NestJS) | Planned |
@@ -187,23 +187,130 @@ removed.
 
 ## Milestone 3: Validation engine + reference targets (offline end-to-end)
 
-**Objective.** First complete demonstration of the product: detect real pipeline bugs, in-process.
+**Objective.** The first complete demonstration of the product, in-process: simulate a world, plan
+faulty delivery, let a target pipeline consume it, compare the target's final state with the
+expected state, and explain every difference by the delivery faults that caused it.
 
 **Included.**
 
-- Actual-state contract (same shape as expected state, Zod-validated, documented).
-- `@dataforge/validation`: missing/unexpected entities, field mismatches, double processing
-  (for example `amountPaidMinor > totalMinor`), referential integrity, state invariants reusing the
-  core rules, and root-cause hints that link each finding to the faults applied to that aggregate.
-- Reference targets: `correct` (idempotent, version-aware) and `naive` (last-arrival-wins, not
-  idempotent), consuming a delivery plan in delivery order through an in-memory transport.
-- CLI `dataforge deliver --target naive|correct` and `dataforge validate`; JSON report + console
-  summary.
+- **Actual-state contract** in `@dataforge/core` (`dataforge.actual-state`, format version 1): the
+  five entity collections of the expected state with the same record shapes, in any order,
+  Zod-validated with the path of each problem, unknown fields rejected. It is what a target hands
+  back, whatever its technology.
+- **State invariants** in `@dataforge/core` (`ECOMMERCE_INVARIANTS`), beside the event rules and
+  built on the same definitions (the order state machine, the order-total formula): referential
+  integrity (order to customer and products, payment and shipment to order, order to its shipment)
+  and consistency (paid amount within the total, status consistent with payments and shipment,
+  counters consistent with records). Every expected state satisfies them.
+- **`@dataforge/validation`** (new, deterministic, I/O-free): compares an actual state with the
+  expected state by entity ID and checks the invariants on the actual state. Finding categories:
+  `missing-entity`, `unexpected-entity`, `duplicate-record`, `status-mismatch`, `field-mismatch`,
+  `double-processing` (a counter or amount above the expected value, or more paid than the order
+  total), `referential-integrity`, `invariant-violation`. Each finding carries root-cause hints:
+  the abnormal deliveries (delay, reorder, duplicate, transient failure, loss, out of order) of
+  the events of the aggregates behind the entity, or an explicit "no delivery fault explains this".
+  JSON report (`validation-report.json`) with a PASS/FAIL verdict and counts per category.
+- **`@dataforge/targets`** (new, deterministic, I/O-free): the target interface, the delivery
+  message (key = `aggregateId`, the canonical event, attempt headers; the shape Kafka will carry in
+  Milestone 4), an in-memory transport that hands every *delivered* attempt to the target in
+  delivery order (failed attempts never reach it), and two reference targets:
+  - `correct`: idempotent by `eventId`, applies each aggregate's events in version order (parks an
+    early event until its predecessor arrives) and parks an order until its customer and products
+    exist; it uses the core projection, so any difference it shows comes from delivery.
+  - `naive`: applies every message as it arrives: creates overwrite (upsert), status is the last
+    arrival's, counters and amounts are incremented on every copy, and an update of a row that does
+    not exist yet is silently lost.
+- **CLI.** `dataforge deliver --run <dir> --plan <dir> --target correct|naive --out <dir>` writes
+  `actual-state.json` and `target-run.json` (target, the plan and run it consumed, message counts,
+  events still parked, checksum). `dataforge validate --run <dir> --actual <file> [--plan <dir>]
+  [--report <file>]` prints a console summary (verdict, counts per category, findings with their
+  hints) and optionally writes the JSON report. Exit 0 pass, 1 findings, 2 invalid input.
+- Example profiles `chaos-profiles/duplicates-only.json` and `reorders-only.json`, so one fault
+  type can be tested in isolation.
 
-**Automated tests.** Hand-mutated actual states (dropped order, doubled payment, wrong status,
-dangling reference) are each detected with the right category; `naive` + duplicates produces a
-double-charge finding; `naive` + reorder produces a wrong-status finding; `correct` passes every
-profile; with zero faults both pass.
+**Architectural decisions** (ADR-0008).
+
+| Question | Options | Choice |
+| --- | --- | --- |
+| Where the actual-state contract lives | validation; targets; core | **Core**, next to the expected state it mirrors. Targets produce it and validation reads it without depending on each other. |
+| How invariants reuse the core rules | replay synthetic events through the event rules; separate state invariants | **State invariants in core** sharing the rule definitions (state machine, total formula). Event rules check one event against the state before it; a final state needs whole-state checks, and synthesizing events would only fit half the rules. |
+| Finding granularity | one per differing field; one per entity and category | **One per (entity, category)**, listing every differing field, so one doubled payment is one `double-processing` finding per entity, not five lines. |
+| Over-counted versus under-counted | both `field-mismatch`; over-counting is `double-processing` | **Over-counting is `double-processing`** (the duplicate signature); under-counting stays `field-mismatch` (a lost update). |
+| Targets and validation | one package; two packages | **Two.** The validator must judge any target, including the user's, and never know target internals; the Milestone 4 consumer process reuses the targets alone. |
+| Correct target's projection | its own; the core projection | **Core projection.** The reference target is the control group: it isolates the delivery-handling logic (dedupe, version order, dependencies). |
+| Lost events | correct target expected to pass anyway; findings explained by loss | **Explained by loss.** No consumer can rebuild an event it never received; with a lossy profile every finding of the correct target must point at a lost event. |
+| Binding an actual state to its plan | none; `target-run.json` next to the actual state | **`target-run.json`.** `validate --plan` refuses a plan other than the one the target consumed, so hints never come from the wrong plan. |
+
+**Dependencies.** `@dataforge/core`: world-state records, `applyEvent`, the state machine,
+`canonicalJson`. `@dataforge/chaos`: `DeliveryAttempt`, `parseDeliveryPlan`,
+`firstDeliveriesByAggregate`. CLI: run and plan directories (`readIntactCanonicalLog`,
+`readPlanForRun`).
+
+**Code and documentation changes.** Core: `actual-state` contract and `ECOMMERCE_INVARIANTS`;
+new `packages/validation` and `packages/targets`; CLI commands `deliver` and `validate`; ESLint
+determinism guard and Jest mapping extended to both packages; two example profiles; ADR-0008;
+`data-formats.md` (actual state, target run, validation report); `ARCHITECTURE.md`; README;
+manual verification guide and self-check.
+
+**Automated tests.** Actual-state schema (paths, unknown fields, round trip); every invariant holds
+on the expected state of 20 seeds and rejects a crafted bad state; validating the expected state
+as actual gives no finding; hand-mutated states (dropped order, doubled payment, wrong status,
+dangling reference, extra entity, duplicate record, changed field) are each detected with the right
+category; hints name the faulted event, and an unfaulted difference is reported as unexplained;
+the report is deterministic; both targets reproduce the expected state with zero faults; `naive` +
+duplicates gives a double charge; `naive` + reorders gives a wrong status; `correct` passes every
+example profile without loss and extreme profiles (rate 1 per fault type) over several chaos seeds;
+`correct` + `lossy` fails with every finding linked to a lost event; correct-target idempotency and
+parking; golden actual-state hashes; CLI behaviour, exit codes, tampered and mismatched inputs.
+
+**Acceptance criteria.**
+
+- With zero faults, both targets produce exactly the expected state and `validate` passes.
+- `correct` passes under every example profile that does not allow loss, on the small and the
+  specification-sized scenario.
+- `naive` under duplicates produces `double-processing` findings (a customer charged twice), and
+  under reorders produces `status-mismatch` findings; each finding names the faulted event.
+- Hand-mutated actual states are detected with the right category: dropped order
+  (`missing-entity`), doubled payment (`double-processing`), wrong status (`status-mismatch`),
+  dangling reference (`referential-integrity`).
+- Under a lossy profile, every finding of the `correct` target is linked to a lost event; a
+  difference no fault touched is reported as unexplained.
+- Same run, plan and target produce byte-identical `actual-state.json` and
+  `validation-report.json`.
+- An invalid actual state is rejected with the path of each problem (exit 2); an actual state
+  validated against a plan it was not produced from is refused.
+
+**Manual verification.** `docs/manual-verification/milestone-3.md` (MV-3.1 to MV-3.13: install
+and checks, the zero-fault baseline, the spec's example, double charges under duplicates, wrong
+status under reorders, the correct target under every lossless profile, loss explained, determinism
+by checksum, hand-mutated actual states, bad input, mismatched and edited inputs, the spec's example
+size, the determinism guard). Self-check: `scripts/verification/milestone-3.ps1`, 13 of 13 cases
+passing in PowerShell 7.6 and 12 of 12 in Windows PowerShell 5.1 (`-SkipInstall`) on 2026-11-22.
+
+**Implementation notes.**
+
+- Hint ranking needed field awareness: a redelivered create (`CustomerRegistered`, `OrderCreated`)
+  resets counters in a naive target, so for an over-count only the incrementing events
+  (`OrderCreated` for `orderCount`, `PaymentCompleted` for amounts) rank first.
+- The dependency model behind hints (ADR-0008, decision 4) is specific to the e-commerce domain; a new
+  event type that touches another aggregate's record must be added to it.
+- `orderLinesTotalMinor` is now shared by the event rule `order.total-matches-lines` and the state
+  invariant of the same name. Generation output is unchanged (golden hashes and `ENGINE_VERSION`
+  unchanged).
+- `samePath` moved from the `chaos plan` command to `run-directory.ts`, so `deliver` and
+  `validate` can share it.
+
+**Product-owner decisions** (2026-11-22, the recommendations accepted):
+
+- D-3.1: under a profile that allows loss, `validate` keeps the verdict `FAIL` for the correct
+  target; the requirement is that every one of its findings is linked to a lost event. A separate
+  verdict (for example `PASS (explained by loss)`) may be added later without changing the report
+  format (ADR-0008, decision 7).
+- D-3.2: unknown fields in an actual state stay rejected with their path. An explicit opt-in (for
+  example `--ignore-extra-fields`) may be added from Milestone 4 if a real pipeline needs it
+  (ADR-0008, decision 1).
+
+**Approved** 2026-11-22.
 
 ---
 
@@ -288,6 +395,8 @@ None at the moment.
 | KafkaJS has had no release since 2.2.4 (February 2023). | Compatibility with current Kafka, unfixed bugs. | Keep Kafka behind a narrow delivery port; in Milestone 4 spike KafkaJS against the pinned broker and compare with `@confluentinc/kafka-javascript` (Confluent-supported, KafkaJS-compatible API, native) and `@platformatic/kafka` (pure TypeScript). Decide with evidence. |
 | TypeScript 7 is current, but ts-jest and typescript-eslint do not support it yet. | Toolchain lock-in. | Pinned to TypeScript 6.0.3 (ADR-0005). Revisit when both support 7. |
 | Prisma `latest` is a release candidate. | Unstable persistence layer. | Pin a stable 7.x in Milestone 6 unless 8.0 is final by then. |
-| Docker Desktop is installed but its engine was not running during Milestones 1-2. | Blocks Milestones 4 and 6. | Start Docker Desktop before Milestone 4. Milestones 1-3 need no infrastructure. |
+| Docker Desktop is installed but its engine was not running during Milestones 1-3. | Blocks Milestones 4 and 6. | Start Docker Desktop before Milestone 4. Milestones 1-3 need no infrastructure. |
+| Root-cause hints rely on a hand-written dependency model of the e-commerce domain. | New event types could leave findings under-explained (reported as "not explained by delivery"). | ADR-0008 names the rule; the end-to-end tests assert that every naive finding is explained under four profiles and on the spec-sized scenario, so a gap shows up as a failing test. |
+| The in-memory transport ignores delivery time (only order matters). | Processing-time effects (Milestone 5 windows) are not exercised offline. | By design (ADR-0008); Milestone 4 plays the plan in wall-clock time, Milestone 5 adds windows. |
 | Plans are built in memory (about 19,000 attempts for the spec-sized scenario, planned in about 0.4 s). | Memory use near the scenario limits (100,000 orders, a few hundred thousand attempts). | Profile with generation in Milestone 10. |
 | In-memory generation. | Memory use near the scenario limits. | Limits enforced by the schema; profile in Milestone 10 before optimizing. |

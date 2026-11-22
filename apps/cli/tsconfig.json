@@ -5,7 +5,9 @@
     "noEmit": true,
     "paths": {
       "@dataforge/core": ["../../packages/core/src/index.ts"],
-      "@dataforge/chaos": ["../../packages/chaos/src/index.ts"]
+      "@dataforge/chaos": ["../../packages/chaos/src/index.ts"],
+      "@dataforge/targets": ["../../packages/targets/src/index.ts"],
+      "@dataforge/validation": ["../../packages/validation/src/index.ts"]
     }
   },
   "include": ["src", "test"]

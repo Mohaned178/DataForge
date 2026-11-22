@@ -36,3 +36,31 @@ export function isTransitionAllowed(eventType: OrderTransitionEventType, from: O
   const allowed: readonly OrderStatus[] = ORDER_TRANSITIONS[eventType].from;
   return allowed.includes(from);
 }
+
+/** `status` and every status the state machine can reach from it, in ORDER_STATUSES order. */
+export function statusesReachableFrom(status: OrderStatus): readonly OrderStatus[] {
+  const reached = new Set<OrderStatus>([status]);
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const transition of Object.values(ORDER_TRANSITIONS)) {
+      const from: readonly OrderStatus[] = transition.from;
+      if (!reached.has(transition.to) && from.some((candidate) => reached.has(candidate))) {
+        reached.add(transition.to);
+        grew = true;
+      }
+    }
+  }
+  return ORDER_STATUSES.filter((candidate) => reached.has(candidate));
+}
+
+/** Statuses of an order that has been paid: PaymentCompleted's target and everything after it. */
+export const PAID_ORDER_STATUSES = statusesReachableFrom(ORDER_TRANSITIONS.PaymentCompleted.to);
+
+/** Statuses of an order that has a shipment: ShipmentCreated's target and everything after it. */
+export const SHIPPED_ORDER_STATUSES = statusesReachableFrom(ORDER_TRANSITIONS.ShipmentCreated.to);
+
+/** The order total: the sum of quantity x unit price over its lines, in minor units. */
+export function orderLinesTotalMinor(lines: readonly { readonly quantity: number; readonly unitPriceMinor: number }[]): number {
+  return lines.reduce((sum, line) => sum + line.quantity * line.unitPriceMinor, 0);
+}

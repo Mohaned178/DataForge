@@ -44,6 +44,15 @@ export {
 
 export { defineRule, type BusinessRule, type RuleDefinition } from './rules/business-rule';
 export { ECOMMERCE_RULES } from './rules/ecommerce-rules';
+export {
+  ECOMMERCE_INVARIANTS,
+  ENTITY_TYPES,
+  INVARIANT_CATEGORIES,
+  type EntityType,
+  type InvariantCategory,
+  type InvariantViolation,
+  type StateInvariant,
+} from './rules/state-invariants';
 
 export { ProjectionError, applyEvent } from './projection/apply-event';
 export {
@@ -54,6 +63,16 @@ export {
   type ExpectedState,
   type ExpectedStateSummary,
 } from './projection/expected-state';
+export {
+  ACTUAL_STATE_FORMAT,
+  ACTUAL_STATE_FORMAT_VERSION,
+  ActualStateValidationError,
+  actualStateSchema,
+  buildActualState,
+  parseActualState,
+  serializeActualState,
+  type ActualState,
+} from './projection/actual-state';
 export { CanonicalLogViolationError, replayCanonicalLog, type ReplayResult, type RuleViolation } from './projection/replay';
 export * from './projection/world-state';
 

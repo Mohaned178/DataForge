@@ -2,9 +2,11 @@ import { ENGINE_VERSION } from '@dataforge/core';
 import { PLANNER_VERSION } from '@dataforge/chaos';
 import { EXIT_OK, EXIT_USAGE, UsageError, type CliIo } from './cli-io';
 import { CHAOS_PLAN_USAGE, runChaos } from './commands/chaos-plan';
+import { DELIVER_USAGE, runDeliver } from './commands/deliver';
 import { EXPLAIN_USAGE, runExplain } from './commands/explain';
 import { GENERATE_USAGE, runGenerate } from './commands/generate';
 import { TIMELINE_USAGE, runTimeline } from './commands/timeline';
+import { VALIDATE_USAGE, runValidate } from './commands/validate';
 import { VERIFY_USAGE, runVerify } from './commands/verify';
 
 const COMMANDS: Record<string, (args: readonly string[], io: CliIo) => number> = {
@@ -13,6 +15,8 @@ const COMMANDS: Record<string, (args: readonly string[], io: CliIo) => number> =
   timeline: runTimeline,
   chaos: runChaos,
   explain: runExplain,
+  deliver: runDeliver,
+  validate: runValidate,
 };
 
 const HELP = [
@@ -29,8 +33,12 @@ const HELP = [
   '      Plan how the events of a run are delivered under a chaos profile: delivery-plan.jsonl, delivery-summary.json.',
   `  ${EXPLAIN_USAGE}`,
   '      Show every delivery attempt of one event, the faults behind it and its order within its aggregate.',
+  `  ${DELIVER_USAGE}`,
+  '      Deliver a plan to a reference target in process and write the state it ends in: actual-state.json, target-run.json.',
+  `  ${VALIDATE_USAGE}`,
+  '      Compare an actual state with the expected state, check the invariants, and explain each finding by delivery faults.',
   '',
-  'Exit codes: 0 success, 1 check failed, 2 invalid input.',
+  'Exit codes: 0 success, 1 check failed (validate: findings), 2 invalid input.',
 ];
 
 export function runCli(argv: readonly string[], io: CliIo): number {

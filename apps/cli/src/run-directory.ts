@@ -1,7 +1,18 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { z } from 'zod';
-import { EVENT_TYPES, EventLogParseError, parseEventLog, sha256Hex, type CanonicalEvent, type EventType } from '@dataforge/core';
+import {
+  CanonicalLogViolationError,
+  EVENT_TYPES,
+  EventLogParseError,
+  parseEventLog,
+  replayCanonicalLog,
+  serializeExpectedState,
+  sha256Hex,
+  type CanonicalEvent,
+  type EventType,
+  type ExpectedState,
+} from '@dataforge/core';
 import { UsageError } from './cli-io';
 
 export const RUN_FILES = {
@@ -64,6 +75,11 @@ export function prepareOutputDirectory(directory: string, force: boolean, files 
   mkdirSync(directory, { recursive: true });
 }
 
+/** Windows paths are case-insensitive; elsewhere they are not. */
+export function samePath(a: string, b: string): boolean {
+  return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
+}
+
 /** Writes exact bytes: UTF-8, no BOM, "\n" line endings, on every operating system. */
 export function writeRunFile(directory: string, name: string, content: string): void {
   writeFileSync(join(directory, name), content, { encoding: 'utf8' });
@@ -120,4 +136,33 @@ export function readIntactCanonicalLog(directory: string, manifest: RunManifest)
     }
     throw error;
   }
+}
+
+/**
+ * The expected state of a run, re-derived by replaying its intact canonical log. expected-state.json
+ * must match its checksum and the replay, so validation never compares against an edited file.
+ */
+export function readIntactExpectedState(directory: string, manifest: RunManifest, events: readonly CanonicalEvent[]): ExpectedState {
+  const text = readRunFile(directory, RUN_FILES.expectedState);
+  if (text === undefined) {
+    throw new UsageError(`${RUN_FILES.expectedState} not found in ${directory}`);
+  }
+  const modified = `${RUN_FILES.expectedState} in ${directory} does not match`;
+  const advice = 'Run "dataforge verify --run <directory>" for details, or regenerate it.';
+  if (sha256Hex(text) !== manifest.files[RUN_FILES.expectedState].sha256) {
+    throw new UsageError(`${modified} the checksum in ${RUN_FILES.manifest}: the run was modified.\n${advice}`);
+  }
+  let expectedState: ExpectedState;
+  try {
+    expectedState = replayCanonicalLog(events).expectedState;
+  } catch (error) {
+    if (error instanceof CanonicalLogViolationError) {
+      throw new UsageError(`${RUN_FILES.events} in ${directory} breaks the business rules: ${error.message}\n${advice}`);
+    }
+    throw error;
+  }
+  if (serializeExpectedState(expectedState) !== text) {
+    throw new UsageError(`${modified} the replayed canonical log.\n${advice}`);
+  }
+  return expectedState;
 }

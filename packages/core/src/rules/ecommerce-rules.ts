@@ -1,4 +1,4 @@
-import { ORDER_TRANSITIONS, isTransitionAllowed, type OrderTransitionEventType } from '../domain/order-lifecycle';
+import { ORDER_TRANSITIONS, isTransitionAllowed, orderLinesTotalMinor, type OrderTransitionEventType } from '../domain/order-lifecycle';
 import type { BusinessRule } from './business-rule';
 import { defineRule } from './business-rule';
 
@@ -87,7 +87,7 @@ export const ECOMMERCE_RULES: readonly BusinessRule[] = [
     description: 'The order total equals the sum of quantity x unit price over its lines.',
     eventTypes: ['OrderCreated'],
     check: (_state, event) => {
-      const expected = event.payload.lines.reduce((sum, line) => sum + line.quantity * line.unitPriceMinor, 0);
+      const expected = orderLinesTotalMinor(event.payload.lines);
       return expected === event.payload.totalMinor
         ? undefined
         : `totalMinor is ${event.payload.totalMinor} but the lines sum to ${expected}`;

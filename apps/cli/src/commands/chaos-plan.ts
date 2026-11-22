@@ -12,7 +12,7 @@ import {
 } from '@dataforge/chaos';
 import { EXIT_OK, EXIT_USAGE, UsageError, formatCount, padRight, readJsonFile, type CliIo } from '../cli-io';
 import { PLAN_FILES, type DeliverySummaryFile } from '../plan-directory';
-import { RUN_FILES, fileEntry, prepareOutputDirectory, readIntactCanonicalLog, readManifest, writeRunFile } from '../run-directory';
+import { RUN_FILES, fileEntry, prepareOutputDirectory, readIntactCanonicalLog, readManifest, samePath, writeRunFile } from '../run-directory';
 import { formatSimTime } from './timeline';
 
 export const CHAOS_PLAN_USAGE =
@@ -144,9 +144,4 @@ function printFaults(summary: DeliverySummary, io: CliIo): void {
         `(configured ${(100 * tally.rate).toFixed(2)}%)${extra === '' ? '' : `  ${extra}`}`,
     );
   });
-}
-
-/** Windows paths are case-insensitive; elsewhere they are not. */
-function samePath(a: string, b: string): boolean {
-  return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
 }

@@ -1,0 +1,8 @@
+{
+  "formatVersion": 1,
+  "name": "reorders-only",
+  "description": "Only reorders: 10% of the events that have a later event in their aggregate are delivered after it. Nothing is duplicated or lost.",
+  "faults": {
+    "reorder": { "rate": 0.1, "distance": { "min": 1, "max": 2 } }
+  }
+}

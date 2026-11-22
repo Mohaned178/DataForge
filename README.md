@@ -2,14 +2,15 @@
 
 **A data pipeline chaos testing platform.** DataForge simulates a realistic business, produces the
 canonical stream of events that happened and the final state a correct pipeline must reach, then
-plans how those events are delivered late, duplicated, reordered or after failed attempts, and (in
-upcoming milestones) checks whether your pipeline still gets the right answer.
+plans how those events are delivered late, duplicated, reordered or after failed attempts, delivers
+them to a target pipeline, and checks whether the pipeline still gets the right answer, explaining
+every wrong result by the delivery faults that most likely caused it.
 
 The value is not the generated data. It is finding data-processing bugs in a reproducible way.
 
-> **Status:** Milestones 1 (deterministic simulation core + CLI) and 2 (chaos delivery planner) of 10
-> are approved. Next: Milestone 3, the validation engine and reference targets. See
-> [docs/ROADMAP.md](docs/ROADMAP.md).
+> **Status:** Milestones 1 (deterministic simulation core + CLI), 2 (chaos delivery planner) and 3
+> (validation engine + reference targets, offline end to end) of 10 are approved. Next: Milestone 4,
+> Kafka delivery and an out-of-process target. See [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Requirements
 
@@ -28,6 +29,9 @@ pnpm dataforge timeline --run out/run-42 --aggregate ord_000007
 
 pnpm dataforge chaos plan --run out/run-42 --profile chaos-profiles/spec-example.json --chaos-seed 7 --out out/plan-42-7
 pnpm dataforge explain --run out/run-42 --plan out/plan-42-7 --event evt_ord_000088_2
+
+pnpm dataforge deliver --run out/run-42 --plan out/plan-42-7 --target naive --out out/naive-42-7
+pnpm dataforge validate --run out/run-42 --actual out/naive-42-7/actual-state.json --plan out/plan-42-7 --report out/naive-42-7-report.json
 ```
 
 `generate` writes four files to the output directory:
@@ -55,12 +59,31 @@ plan in its own directory, without touching the run:
 `explain` shows every attempt of one event, why it was scheduled when it was, whether it is
 delivered, and whether the target receives it out of order within its aggregate.
 
+`deliver` plays a plan, in delivery order, into a reference target running in process, and writes
+the state the target ends in:
+
+| Target | Behaviour |
+| --- | --- |
+| `correct` | Ignores an `eventId` it already has, applies each order's events in version order (waiting for a late predecessor), and waits for an order's customer and products. Passes under every profile that does not lose events. |
+| `naive` | Applies every message as it arrives: creates overwrite, the last message decides the status, every copy is counted, an update of a row that does not exist yet is lost. Passes only when nothing goes wrong. |
+
+| File | What it is |
+| --- | --- |
+| `actual-state.json` | The target's final state, in the same shape as `expected-state.json`. Your own pipeline can write this format too. |
+| `target-run.json` | Which target consumed which plan of which run, message counts, events it never applied. |
+
+`validate` compares an actual state with the run's expected state, entity by entity, and checks 16
+state invariants (references resolve, nothing paid twice, status consistent with payments and
+shipment, counters consistent with records). Every finding has a category (`missing-entity`,
+`double-processing`, `status-mismatch`, ...) and, with `--plan`, the delivery faults that most
+likely caused it. Exit code 0 means the state is correct, 1 means findings.
+
 ## Development
 
 ```powershell
 pnpm test        # all automated tests
 pnpm typecheck   # strict TypeScript
-pnpm lint        # ESLint, including the determinism guard for packages/core
+pnpm lint        # ESLint, including the determinism guard for packages/*
 pnpm check       # all three
 ```
 
@@ -70,6 +93,7 @@ runs the same cases and checks every expected value:
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verification\milestone-1.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verification\milestone-2.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verification\milestone-3.ps1
 ```
 
 ## Milestone workflow (Claude Code)
@@ -89,6 +113,8 @@ The project is built milestone by milestone with the `/dataforge` command:
 ```
 packages/core          @dataforge/core: simulation engine (no I/O, no frameworks)
 packages/chaos         @dataforge/chaos: chaos delivery planner (no I/O, no frameworks)
+packages/validation    @dataforge/validation: expected-vs-actual validation and root-cause hints (no I/O)
+packages/targets       @dataforge/targets: reference targets and the in-memory transport (no I/O)
 apps/cli               @dataforge/cli: the dataforge command
 scenarios/             example scenario definitions
 chaos-profiles/        example chaos profiles
@@ -103,6 +129,6 @@ docs/                  specification, architecture, roadmap, data formats, manua
 - [Manual verification guides](docs/manual-verification/)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Data formats](docs/data-formats.md): scenario, events, expected state, manifest, chaos profile,
-  delivery plan and summary
+  delivery plan and summary, actual state, target run, validation report
 - [Roadmap](docs/ROADMAP.md)
 - [Architecture decision records](docs/adr/)

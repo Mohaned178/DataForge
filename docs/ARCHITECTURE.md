@@ -10,7 +10,8 @@ in `apps/*` and depends on the engine, never the other way around.
 packages/
   core/          @dataforge/core         Simulation core (Milestone 1)
   chaos/         @dataforge/chaos        Chaos delivery planner (Milestone 2)
-  validation/    @dataforge/validation   Expected-vs-actual comparison (Milestone 3, planned)
+  validation/    @dataforge/validation   Expected-vs-actual comparison, invariants, root-cause hints (Milestone 3)
+  targets/       @dataforge/targets      Reference target pipelines + in-memory transport (Milestone 3)
 apps/
   cli/           @dataforge/cli          Command-line interface (Milestone 1)
   api/           @dataforge/api          NestJS + Prisma + Kafka delivery (Milestones 4, 6, 7, planned)
@@ -21,25 +22,25 @@ scripts/verification/                    Per-milestone self-checks of the manual
 docs/                                    Specification, architecture, roadmap, formats, ADRs
 ```
 
-Dependency direction (enforced by package dependencies, plus ESLint for `packages/core` and
-`packages/chaos`):
+Dependency direction (enforced by package dependencies, plus ESLint for the four `packages/*`):
 
 ```text
-           apps/web ──HTTP──▶ apps/api
-                                 │
-apps/cli ────────┐               │
-                 ▼               ▼
-        packages/validation  packages/chaos
-                 │               │
-                 └──────▶ packages/core ◀── (no dependencies except zod)
+apps/web            ──HTTP──▶ apps/api (planned)
+apps/cli            ──▶ validation, targets, chaos, core
+packages/validation ──▶ chaos (delivery attempts), core
+packages/targets    ──▶ chaos (delivery attempts), core
+packages/chaos      ──▶ core
+packages/core       ──▶ zod only
 ```
 
-`apps/cli` depends on `packages/chaos` and `packages/core` today; `packages/validation` arrives in
-Milestone 3.
+`packages/validation` and `packages/targets` both read delivery attempts from `packages/chaos` and
+state records from `packages/core`, but never depend on each other: the validator judges any
+target, including one the user wrote. (Validation's end-to-end tests use the targets as a dev
+dependency.)
 
-`packages/core` and `packages/chaos` may not import file system, network, process, NestJS, Prisma,
-Kafka or React modules, and may not call `Math.random`, `Date.now`, `new Date()`, `localeCompare`
-or `toLocaleString`. `pnpm lint` fails if they do.
+`packages/core`, `packages/chaos`, `packages/validation` and `packages/targets` may not import file
+system, network, process, NestJS, Prisma, Kafka or React modules, and may not call `Math.random`,
+`Date.now`, `new Date()`, `localeCompare` or `toLocaleString`. `pnpm lint` fails if they do.
 
 ## Inside `@dataforge/core`
 
@@ -51,8 +52,8 @@ or `toLocaleString`. `pnpm lint` fails if they do.
 | `domain/` | Deterministic IDs and the order state machine (`ORDER_TRANSITIONS`), the single source of lifecycle rules. |
 | `events/` | Canonical event schemas, event drafts, canonical ordering, JSONL serialization. |
 | `generation/` | Catalog, customer and order lifecycle generators, plus `simulate()`. |
-| `rules/` | The business rule registry (`defineRule`, `ECOMMERCE_RULES`). |
-| `projection/` | World state, `applyEvent`, strict replay with log-integrity checks, expected-state output. |
+| `rules/` | The business rule registry (`defineRule`, `ECOMMERCE_RULES`) and the state invariants (`ECOMMERCE_INVARIANTS`), which check a whole final state. |
+| `projection/` | World state, `applyEvent`, strict replay with log-integrity checks, expected-state output, and the actual-state contract a target reports (`parseActualState`). |
 | `serialization/` | Canonical JSON (sorted keys) and locale-independent string comparison. |
 
 ## Inside `@dataforge/chaos`
@@ -65,6 +66,19 @@ or `toLocaleString`. `pnpm lint` fails if they do.
 The package only reads canonical events. It never changes them and never delivers anything: it
 decides *what* is delivered, *when*, and *with which faults*. Milestone 4 executes a plan through
 Kafka.
+
+## Inside `@dataforge/validation` and `@dataforge/targets`
+
+| Module | Responsibility |
+| --- | --- |
+| `validation/src/validate.ts` | Compares actual with expected state by entity ID, checks the invariants on the actual state, ranks root-cause hints, builds the result. |
+| `validation/src/delivery-index.ts` | Reduces a delivery plan to the events whose delivery was abnormal, per aggregate. |
+| `targets/src/transport/in-memory.ts` | Plays a plan into a target in delivery order; failed attempts never reach it. |
+| `targets/src/reference/correct.ts` | Idempotent, version-ordered, dependency-aware consumer built on the core projection. |
+| `targets/src/reference/naive.ts` | A consumer that assumes perfect delivery: upserts, last arrival wins, counts every copy. |
+
+A target implements `Target` (`handle(message)`, `finish()`). A `DeliveryMessage` is the record
+Kafka will carry in Milestone 4: key `aggregateId`, the canonical event, attempt headers.
 
 ## Data flow (Milestone 1)
 
@@ -118,6 +132,27 @@ chaos seed ───── normalizeSeed ─────────────
 `dataforge explain` reads the run and the plan back (both checksum-verified, and the plan must
 belong to the run) and accounts for every attempt of one event.
 
+## Data flow (Milestone 3)
+
+```text
+run (events.jsonl, intact) ──┬──────────────────────────────────────────────┐
+plan (delivery-plan.jsonl) ──┤                                              │
+                             ▼                                              │
+     deliverInMemory: every delivered attempt, in delivery order,           │
+     becomes a DeliveryMessage { key, event, headers } ─▶ target.handle()   │
+                             │ target.finish()                              │
+                             ▼                                              │
+     actual-state.json + target-run.json (bound to run and plan by hash)    │
+                             │                                              ▼
+                             ▼
+     validate: expected state (replayed from the intact log) vs actual state, by entity ID
+               + ECOMMERCE_INVARIANTS on the actual state
+               + for each finding: abnormal deliveries of the events its entity depends on
+                             │
+                             ▼
+     console summary + validation-report.json   (exit 0 PASS, 1 findings)
+```
+
 ## Key concepts
 
 - **Canonical event**: a business fact in the simulated world, identified by `eventId`, positioned
@@ -135,6 +170,10 @@ belong to the run) and accounts for every attempt of one event.
   never alter the event.
 - **Chaos seed**: independent of the simulation seed, so one world can be tested under many fault
   patterns. **Planner version** (`PLANNER_VERSION`) plays the role of the engine version for plans.
+- **Actual state**: what a target reports at the end, in the same shape as the expected state. The
+  validator compares the two; it never looks inside the target.
+- **Finding and cause**: a finding is one way the actual state is wrong (one entity, one category);
+  its causes are the delivery faults that could have produced it, most likely first.
 - **Engine version**: `ENGINE_VERSION` names the generation algorithm. Any change in output for the
   same scenario and seed requires a version bump; the golden test enforces this.
 
