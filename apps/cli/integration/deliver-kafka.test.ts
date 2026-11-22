@@ -7,7 +7,8 @@ import type { CliIo } from '../src/cli-io';
 
 const REPO_ROOT = join(__dirname, '..', '..', '..');
 const SEEDS = ['42', '7'];
-const PROFILES = ['none', 'spec-example', 'flaky-network', 'lossy'];
+const PROFILES = ['none', 'spec-example', 'flaky-network', 'lossy', 'windowed-delays', 'late-data'];
+const WINDOWED_PROFILES = new Set(['windowed-delays', 'late-data']);
 const TARGETS = ['correct', 'naive'];
 
 interface Captured {
@@ -63,7 +64,8 @@ describe('deliver --transport kafka (real broker, separate consumer process)', (
     const kafka = await deliver(seed, profile, target, `kafka-${name}`, '--transport', 'kafka');
     expect(memory).toMatchObject({ code: 0, err: '' });
     expect(kafka).toMatchObject({ code: 0, err: '' });
-    for (const file of ['actual-state.json', 'target-run.json']) {
+    const files = ['actual-state.json', 'target-run.json', ...(WINDOWED_PROFILES.has(profile) ? ['actual-windows.json'] : [])];
+    for (const file of files) {
       expect(read(workspace, `kafka-${name}`, file)).toBe(read(workspace, `memory-${name}`, file));
     }
     const memoryReport = await validate(seed, profile, `memory-${name}`);

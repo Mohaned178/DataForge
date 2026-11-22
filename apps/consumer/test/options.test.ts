@@ -22,8 +22,21 @@ describe('consumer command line', () => {
     [['--topic', 'bad topic', ...required.slice(2)], /Invalid topic/],
     [[...required, '--brokers', 'nowhere'], /Invalid Kafka broker list/],
     [[...required, '--verbose'], /Unknown option/],
+    [[...required, '--allowed-lateness-ms', '600000'], /--allowed-lateness-ms needs --window-size-ms/],
+    [[...required, '--window-size-ms', '10'], /Invalid windowing: sizeMs/],
+    [[...required, '--window-size-ms', '1h'], /Invalid windowing: sizeMs/],
+    [[...required, '--window-size-ms', '3600000', '--allowed-lateness-ms', '1.5'], /Invalid windowing: allowedLatenessMs/],
   ])('rejects %j', (argv, message) => {
     expect(() => parseConsumerOptions(argv, {})).toThrow(ConsumerUsageError);
     expect(() => parseConsumerOptions(argv, {})).toThrow(message);
+  });
+
+  it('reads a windowing contract, with no allowed lateness unless given', () => {
+    expect(parseConsumerOptions(required, {}).windowing).toBeUndefined();
+    expect(parseConsumerOptions([...required, '--window-size-ms', '3600000'], {}).windowing).toEqual({ sizeMs: 3_600_000, allowedLatenessMs: 0 });
+    expect(parseConsumerOptions([...required, '--window-size-ms', '3600000', '--allowed-lateness-ms', '600000'], {}).windowing).toEqual({
+      sizeMs: 3_600_000,
+      allowedLatenessMs: 600_000,
+    });
   });
 });

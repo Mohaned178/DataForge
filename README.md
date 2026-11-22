@@ -9,8 +9,9 @@ every wrong result by the delivery faults that most likely caused it.
 The value is not the generated data. It is finding data-processing bugs in a reproducible way.
 
 > **Status:** Milestones 1 (deterministic simulation core + CLI), 2 (chaos delivery planner), 3
-> (validation engine + reference targets, offline end to end) and 4 (Kafka delivery + out-of-process
-> target) of 10 are approved. Next: Milestone 5, event-time windows and late data. See
+> (validation engine + reference targets, offline end to end), 4 (Kafka delivery + out-of-process
+> target) and 5 (event-time windows and late data) of 10 are approved. Next: Milestone 6,
+> persistence (PostgreSQL + Prisma) and the API foundation (NestJS). See
 > [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Requirements
@@ -101,6 +102,27 @@ shipment, counters consistent with records). Every finding has a category (`miss
 `double-processing`, `status-mismatch`, ...) and, with `--plan`, the delivery faults that most
 likely caused it. Exit code 0 means the state is correct, 1 means findings.
 
+### Windows and late data
+
+A chaos profile can also carry the **windowing contract** of the pipeline under test: tumbling
+event-time windows and how long after its end a window still accepts events. A window *closes* when
+the pipeline's stream time (the largest event time it has received) passes its end plus that allowed
+lateness. The `late` fault makes events arrive after their window has closed:
+
+```powershell
+pnpm dataforge chaos plan --run out/run-42 --profile chaos-profiles/late-data.json --chaos-seed 7 --out out/plan-late
+pnpm dataforge deliver --run out/run-42 --plan out/plan-late --target correct --out out/late-correct
+pnpm dataforge validate --run out/run-42 --actual out/late-correct/actual-state.json --plan out/plan-late
+```
+
+For a windowed plan, the targets also write `actual-windows.json`: `ordersCreated`,
+`paymentsCompleted` and `revenueMinor` per window. `correct` counts each event once in its event-time
+window and drops events that arrive after the close; `naive` counts every copy in the window it
+arrives in (processing time). `validate` compares them with the true per-window values from the
+canonical log and explains each short or long window by the events behind it: arrived after close,
+within the allowed lateness, during another window, or more than once. Profiles: `windowed-none`,
+`windowed-delays` (delays within the lateness and duplicates: `correct` passes), `late-data`.
+
 ## Development
 
 ```powershell
@@ -119,6 +141,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verification\milesto
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verification\milestone-2.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verification\milestone-3.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verification\milestone-4.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verification\milestone-5.ps1
 ```
 
 ## Milestone workflow (Claude Code)

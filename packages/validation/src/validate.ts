@@ -14,6 +14,7 @@ import {
 import type { DeliveryAttempt } from '@dataforge/chaos';
 import { DeliveryIndex } from './delivery-index';
 import { FINDING_CATEGORIES, type DeliveryCause, type FieldDifference, type Finding, type FindingCategory, type JsonValue } from './finding';
+import { validateWindows, type WindowValidationInput, type WindowValidationResult } from './windows';
 
 export interface ValidationInput {
   readonly expected: ExpectedState;
@@ -21,6 +22,8 @@ export interface ValidationInput {
   /** The delivery plan the target consumed. With it, every finding gets root-cause hints. */
   readonly attempts?: readonly DeliveryAttempt[];
   readonly invariants?: readonly StateInvariant[];
+  /** The target's per-window metrics and the windowing contract they are checked against. */
+  readonly windows?: Omit<WindowValidationInput, 'attempts'>;
 }
 
 /** The findings that share one most likely cause; `cause` is null for findings no delivery fault explains. */
@@ -48,6 +51,8 @@ export interface ValidationResult {
   readonly rootCauses: readonly RootCause[];
   /** Sorted by entity type, entity ID, category and check. */
   readonly findings: readonly Finding[];
+  /** Only when windows were given. Their findings also make the verdict FAIL. */
+  readonly windows?: WindowValidationResult;
 }
 
 type AnyRecord = Readonly<Record<string, JsonValue>>;
@@ -114,9 +119,13 @@ export function validate(input: ValidationInput): ValidationResult {
     byCategory[finding.category] += 1;
   }
   const explained = findings.filter((finding) => finding.causes.length > 0).length;
+  const windows =
+    input.windows === undefined
+      ? undefined
+      : validateWindows(input.attempts === undefined ? input.windows : { ...input.windows, attempts: input.attempts });
 
-  return {
-    verdict: findings.length === 0 ? 'PASS' : 'FAIL',
+  const result: ValidationResult = {
+    verdict: findings.length === 0 && (windows === undefined || windows.counts.findings === 0) ? 'PASS' : 'FAIL',
     hints: index !== undefined,
     checked: { entities, invariants: invariants.length },
     counts: {
@@ -128,6 +137,7 @@ export function validate(input: ValidationInput): ValidationResult {
     rootCauses: index === undefined ? [] : groupRootCauses(findings),
     findings,
   };
+  return windows === undefined ? result : { ...result, windows };
 }
 
 function compareCollection(spec: CollectionSpec, expected: readonly AnyRecord[], actual: readonly AnyRecord[]): UnrankedFinding[] {

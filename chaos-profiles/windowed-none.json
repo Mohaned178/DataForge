@@ -1,0 +1,7 @@
+{
+  "formatVersion": 1,
+  "name": "windowed-none",
+  "description": "Hourly event-time windows with 10 minutes of allowed lateness, and no faults: the windowed baseline.",
+  "windowing": { "sizeMs": 3600000, "allowedLatenessMs": 600000 },
+  "faults": {}
+}

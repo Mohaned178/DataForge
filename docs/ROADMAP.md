@@ -12,7 +12,7 @@ whenever implementation changes the plan. The workflow is driven by the `/datafo
 | 2 | Chaos delivery planner | **Approved 2026-11-22** |
 | 3 | Validation engine + reference targets (offline end-to-end) | **Approved 2026-11-22** |
 | 4 | Kafka delivery + out-of-process target | **Approved 2026-11-22** |
-| 5 | Event-time windows and late data | Planned |
+| 5 | Event-time windows and late data | **Approved 2026-11-22** |
 | 6 | Persistence (PostgreSQL + Prisma) + API foundation (NestJS) | Planned |
 | 7 | Test executions through the API | Planned |
 | 8 | Web UI: run history and report explorer | Planned |
@@ -464,11 +464,159 @@ Windows PowerShell 5.1 (`-SkipInstall`) on 2026-11-22, with Docker Desktop and t
 
 ## Milestone 5: Event-time windows and late data
 
-**Objective.** Detect bugs caused by events that arrive after a processing window has closed.
+**Objective.** Detect bugs caused by events that arrive after a processing window has closed: a
+target that also computes revenue and order counts per event-time window is checked against the
+true per-window values, and every wrong window is explained by the late, delayed or duplicated
+deliveries behind it.
 
-**Included.** Expected windowed aggregates (for example revenue and order counts per event-time
-window); a "late" fault defined relative to window close and allowed lateness; validation of windowed
-aggregates; a naive windowing reference target (processing-time windows, drops late events).
+**Included.**
+
+- **Windowing contract** in `@dataforge/core` (`windows/`): tumbling event-time windows aligned to
+  the scenario epoch, `{ sizeMs, allowedLatenessMs }`; window math (`windowStartOf`, window end,
+  close = end + allowed lateness); the three window metrics, defined once (`windowContribution`):
+  `ordersCreated` (OrderCreated events), `paymentsCompleted` (PaymentCompleted events) and
+  `revenueMinor` (their amounts); **expected windows** computed from the canonical log (the truth:
+  every event, whatever its delivery); the **actual-windows contract** (`dataforge.actual-windows`,
+  format version 1, `actual-windows.json`), Zod-validated with paths, beside the actual state, which
+  stays unchanged.
+- **Chaos profile** (optional sections, so every existing profile resolves exactly as before):
+  - `windowing: { sizeMs, allowedLatenessMs }`: the windowing contract the target is tested against;
+  - `faults.late: { rate, lateByMs }` (requires `windowing`): the event's original attempt arrives
+    after its window has closed, at least `lateByMs` past the close in *stream time* (the largest
+    event time the target has received). Anchored like reorder: 1 ms after the first delivery of an
+    event whose event time is at least close + `lateByMs`, so a late fault always produces an arrival
+    after close. Composition order: delay, late, reorder, transient failure, duplicate.
+  - the summary of a windowed plan adds the `late` tally and the **arrivals** of every event by
+    stream time: on time, within the allowed lateness, after close, lost. `classifyArrivals` is the
+    one definition, shared by the summary, `explain` and the validator.
+- **Reference targets** compute windows when the plan has a windowing contract:
+  - `correct`: event-time windows, idempotent by `eventId`, a window closes when stream time reaches
+    its close, and an event arriving after that is dropped and counted (`windowEventsDropped`), the
+    behaviour of a correctly configured Kafka Streams or Flink job with that grace period;
+  - `naive`: processing-time windows (each message counted in the window of the moment it arrives,
+    the delivery clock), every copy counted.
+- **Validation of windows** (`@dataforge/validation`), in its own section of the result: compare by
+  window start, a window absent on one side counts as zeros; categories `window-undercount`,
+  `window-overcount`, `duplicate-window`, `misaligned-window`, one finding per (window, category)
+  listing the differing metrics; causes per finding: the counted events of the window (lost, after
+  close, within lateness, arrived in another processing window) and, for over-counts, duplicates and
+  events of other windows that arrived during it. Verdict FAIL when any entity or window finding exists.
+- **CLI**: `chaos plan` prints the windowing, the late tally and the arrivals; `explain` shows the
+  event's window, close and arrival; `deliver` (both transports) writes `actual-windows.json` for a
+  windowed plan, recorded in `target-run.json`; `validate` reads `actual-windows.json` next to the
+  actual state (or `--windows <file>`), takes the contract from the plan, prints a windows section and
+  adds `windows` to the report. The consumer process takes `--window-size-ms` and
+  `--allowed-lateness-ms`.
+- Example profiles `chaos-profiles/windowed-none.json` (hourly windows, 10 minutes of allowed
+  lateness, no faults), `windowed-delays.json` (the same windows, 30% of events delayed by up to
+  9 minutes, 5% duplicated) and `late-data.json` (the same windows, 5% late events, 10% delayed).
+
+**Architectural decisions** (ADR-0010).
+
+| Question | Options | Choice |
+| --- | --- | --- |
+| Where the windowing contract lives | the scenario; a separate file passed to three commands; the chaos profile | **Chaos profile**, optional. It describes the pipeline under test, not the business world, the late fault is measured against it, and `deliver` and `validate` read it from the plan they are already bound to by hash. One world can be tested against several window settings without regenerating it. |
+| When a window closes | delivery clock (a DataForge header); watermark with an out-of-orderness bound; stream time = largest event time received | **Stream time**, closed when it reaches end + allowed lateness (Kafka Streams grace semantics). A real event-time pipeline can follow it without any DataForge header, and the plan order fixes it exactly. |
+| Late fault | a fixed delay past close on the delivery clock; anchored behind an event past the close | **Anchored**: guaranteed after close in stream time, like reorder guarantees an inversion. All anchors point to larger event times, so planning in descending canonical order makes them final; existing plans are unchanged. |
+| Expected windows | the truth (every event); the "contract" value (minus events that arrived after close) | **The truth.** A dropped late event is a wrong window, explained by its late arrival, as a lost event is (D-3.1). The verdict never depends on `--plan`. Open decision D-5.1. |
+| Naive windowing | processing-time buckets; event-time windows that close at window end with no lateness | **Processing-time buckets**, the classic bug: a late or delayed event lands in the wrong window, so one window is short and another long. Closing too early is caught by the validator too (tested with a crafted output). The roadmap's "drops late events" moves to the correct target's documented behaviour after close. |
+| Processing time of the reference targets | wall clock; Kafka record timestamp; delivery clock (`scheduledDeliveryTimeMs` header) | **Delivery clock**: deterministic, and the same in process and through Kafka at any `--speed`. |
+| Output and report shape | extend actual state and categories; separate file and section | **Separate** `actual-windows.json` and a `windows` section, present only for windowed plans. Inputs without windowing give byte-identical outputs (existing golden hashes and self-checks unchanged). |
+
+**Dependencies.** `@dataforge/core` (canonical events, `canonicalJson`, `compareCodeUnits`,
+`simTimeToIso`). `@dataforge/chaos` (profile, planner, summary, explain). `@dataforge/targets`
+(reference targets, `TargetResult`). `@dataforge/validation`. `@dataforge/kafka` (consumer report)
+and `apps/consumer` (options, outputs). CLI: plan directory (`LoadedPlan.profile`), `target-run.json`.
+No new third-party dependency.
+
+**Code and documentation changes.** Core `windows/` module; chaos profile, fault record, planner,
+summary, arrivals, explain; both reference targets and `createReferenceTarget` options; validation
+`windows` section; CLI `chaos plan`, `explain`, `deliver`, `deliver --transport kafka`, `validate`;
+consumer options and outputs, consumer report; two example profiles; ADR-0010; `data-formats.md`
+(windowing, late fault record, summary additions, actual windows, report `windows`);
+`ARCHITECTURE.md`; README; manual verification guide and self-check.
+
+**Automated tests.**
+
+- Unit: windowing schema and window math (alignment, end, close, lateness 0); expected windows sum
+  to the expected state's orders and revenue; actual-windows schema (paths, unknown fields, round
+  trip); profile rules (late requires windowing, existing profiles resolve unchanged); planner golden
+  hashes unchanged; every late fault arrives after close in stream time, by at least `lateByMs` when
+  an anchor exists, and every attempt's time is recomputed from its fault records; late fault-type
+  isolation and monotonic rate; arrivals classification; correct target drops exactly the events the
+  plan classifies as after close, and with no fault, delays within the lateness or duplicates both
+  targets' windows match the truth (correct) or show the expected errors (naive); naive counts every
+  copy in its arrival window; window validation categories and causes on crafted outputs (dropped
+  within lateness, misplaced, doubled, misaligned, listed twice, unexplained edit); deterministic
+  report; golden hashes for the windowed plan, actual windows and report; CLI behaviour, exit codes,
+  missing or extra windows files, a windowed plan without windows.
+- Integration (Kafka): the equivalence test also covers `late-data` and `windowed-delays`, for both
+  targets: `actual-windows.json` byte-identical to the in-memory delivery.
+
+**Acceptance criteria.**
+
+- Profiles, plans, actual states, target runs and reports without windowing are byte-identical to
+  Milestone 4 (golden hashes unchanged).
+- With a windowing contract, expected windows are the true per-window `ordersCreated`,
+  `paymentsCompleted` and `revenueMinor`, summing to the expected state's orders and revenue.
+- Every late fault delivers its event after the event's window has closed (stream time at least
+  close + `lateByMs`, or the latest delivered event time when the log ends sooner); the plan reports
+  every event's arrival class.
+- `correct` matches the expected windows under `none` and `windowed-delays`; under `late-data` it
+  drops exactly the events that arrived after close, and every window finding names one of them.
+- `naive` under `windowed-delays` shows under- and over-counted windows explained by events that
+  arrived in another window and by duplicates.
+- Window findings for crafted outputs have the right category, and an edit no delivery explains is
+  reported as unexplained.
+- Same run, plan and target give byte-identical `actual-windows.json` and report, in process and
+  through Kafka (one partition).
+- A windowed plan without a windows file, a windows file without a windowing contract, and an
+  invalid windows file are refused with exit code 2 and the reason.
+
+**Manual verification.** `docs/manual-verification/milestone-5.md` (MV-5.1 to MV-5.13: install and
+checks; nothing changes without windows (the Milestone 4 hashes); a windowed plan with late events;
+zero faults; delays within the lateness; late data; explain a late event; same bytes; a hand-edited
+windows file; windows through Kafka; the spec's example size; bad input; the determinism guard).
+Self-check: `scripts/verification/milestone-5.ps1`, 13 of 13 cases passing in PowerShell 7.6 and
+12 of 12 in Windows PowerShell 5.1 (`-SkipInstall`) on 2026-11-22, with Docker Desktop and the
+Compose broker; the guide's command blocks were run once, literally, in Windows PowerShell 5.1.
+
+**Implementation notes** (changes to the plan above, with the reason).
+
+- A third example profile, `windowed-none`: a windowed baseline without faults, so a hand edit is
+  reported as unexplained (under `windowed-delays` nearly every window has a delayed event that
+  becomes a hint).
+- `validate` also takes the windowing contract from `target-run.json` when no `--plan` is given, so
+  windows are checked with the same verdict with or without `--plan`; only the causes need the plan.
+- A `deliver --force` with a plan without windows removes an `actual-windows.json` left by an
+  earlier windowed delivery, so `validate` never checks stale windows.
+- The planner now plans events from the last canonical event to the first, instead of aggregate by
+  aggregate (latest version first). Both make every reorder anchor final; the new order also does it
+  for late anchors. Every existing plan is unchanged (golden hashes), so `PLANNER_VERSION` stays
+  0.1.0.
+- The late fault applies to every event, like the other faults. The summary's `arrivals` count only
+  the events windows count (OrderCreated, PaymentCompleted), which is why `late-data` has 21 late
+  events but 9 arrivals after close.
+- On a sparse stream (the small scenario, about 10 events an hour), a delayed event rarely arrives
+  after its hour has ended *in stream time*, so `windowed-delays` shows 0 arrivals within the
+  lateness there; at the specification's size it shows 179. The naive target is still wrong in both,
+  because it buckets by delivery time.
+- The Milestone 4 self-check's MV-4.2 expected 25 integration tests; there are now 33 (8 windowed
+  equivalence cases). Its other cases, including the pinned Milestone 4 hashes, pass on this code.
+
+**Product-owner decisions** (2026-11-22, the recommendations accepted):
+
+- D-5.1: expected windows stay the true values. When events arrive after their window closed, the
+  correct target keeps the verdict `FAIL`, every window finding linked to the late event, the same
+  rule as for lost events (D-3.1). A separate verdict such as `PASS (explained by lateness)` may be
+  added later without changing the report format (ADR-0010, decision 4).
+- D-5.2: MV-4.2 in `scripts/verification/milestone-4.ps1` now expects 33 integration tests, so the
+  Milestone 4 self-check stays runnable (12 of 12 passing in PowerShell 7.6 on 2026-11-22).
+
+Self-check re-run before approval: 13 of 13 in PowerShell 7.6, 12 of 12 in Windows PowerShell 5.1
+(`-SkipInstall`), on 2026-11-22.
+
+**Approved** 2026-11-22.
 
 ---
 
@@ -531,7 +679,9 @@ None at the moment.
 | Prisma `latest` is a release candidate. | Unstable persistence layer. | Pin a stable 7.x in Milestone 6 unless 8.0 is final by then. |
 | Kafka-backed checks need Docker Desktop running. | Without it, `deliver --transport kafka` and `pnpm test:integration` cannot run (exit code 3 and a clear message, never a silent pass). | `pnpm check` needs no Docker; CI runs the integration suite against the Compose broker on every push. Milestone 6 adds PostgreSQL to the same Compose file. |
 | Root-cause hints rely on a hand-written dependency model of the e-commerce domain. | New event types could leave findings under-explained (reported as "not explained by delivery"). | ADR-0008 names the rule; the end-to-end tests assert that every naive finding is explained under four profiles and on the spec-sized scenario, so a gap shows up as a failing test. |
-| The in-memory transport ignores delivery time (only order matters). | Processing-time effects (Milestone 5 windows) are not exercised offline. | By design (ADR-0008). Kafka delivery can play the plan in compressed wall-clock time (`--speed`) and records processing time; Milestone 5 adds windows. |
+| The in-memory transport ignores wall-clock time (only order matters). | A user's pipeline that uses wall-clock processing time cannot be tested offline. | The reference targets take processing time from the delivery clock (`scheduledDeliveryTimeMs` header), so windows are tested the same in process and through Kafka (ADR-0010). Kafka delivery can also play the plan in compressed wall-clock time (`--speed`). |
+| Windows with several Kafka partitions. | Cross-partition interleaving can move the reference target's stream time ahead of the plan's, so it may close windows earlier than the plan predicts; Kafka Streams keeps stream time per partition. | One partition is the default and matches the plan exactly; the integration tests check windows with one partition only (ADR-0010). |
+| Window metrics are specific to the e-commerce domain. | A new metric or event type needs code. | One definition in core (`windowContribution`, `WINDOW_METRIC_EVENT_TYPE`), used by the expected windows, both targets and the validator. |
 | Kafka delivery is sequential (one acknowledged record at a time, about 1 ms each locally). | The spec-sized scenario takes about 20 s; the scenario limits would take minutes. | Exact per-record offsets and order are worth it for now; batching is a Milestone 10 profiling item (ADR-0009). |
 | With several partitions, root-cause hints still come from the plan. | A naive-target finding caused by cross-partition interleaving can be reported as "not explained by delivery". | One partition is the default, which equals the plan exactly. Hints from the consumer's processing log are a possible later addition. |
 | Plans are built in memory (about 19,000 attempts for the spec-sized scenario, planned in about 0.4 s). | Memory use near the scenario limits (100,000 orders, a few hundred thousand attempts). | Profile with generation in Milestone 10. |

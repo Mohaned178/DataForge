@@ -1,4 +1,5 @@
-import type { CanonicalEvent } from '@dataforge/core';
+import type { CanonicalEvent, WindowingSpec } from '@dataforge/core';
+import { classifyArrivals, type EventArrival } from './arrivals';
 import type { DeliveryAttempt } from './delivery-attempt';
 import { firstDeliveriesByAggregate, type FirstDelivery } from './summary';
 
@@ -15,6 +16,8 @@ export interface EventExplanation {
   readonly overtakenBy: readonly FirstDelivery[];
   /** Earlier events of the same aggregate the target receives after this one. */
   readonly overtook: readonly FirstDelivery[];
+  /** The event's window and when it arrived relative to it; only for a plan with a windowing contract. */
+  readonly window?: EventArrival;
 }
 
 export class UnknownEventError extends Error {
@@ -29,6 +32,7 @@ export function explainEvent(
   events: readonly CanonicalEvent[],
   attempts: readonly DeliveryAttempt[],
   eventId: string,
+  windowing?: WindowingSpec,
 ): EventExplanation {
   const event = events.find((candidate) => candidate.eventId === eventId);
   if (event === undefined) {
@@ -50,7 +54,7 @@ export function explainEvent(
     );
   }
 
-  return {
+  const explanation: EventExplanation = {
     event,
     attempts: own,
     outcome: firstDelivery === undefined ? 'lost' : 'delivered',
@@ -59,4 +63,6 @@ export function explainEvent(
     overtakenBy,
     overtook,
   };
+  const window = windowing === undefined ? undefined : classifyArrivals(attempts, windowing).get(eventId);
+  return window === undefined ? explanation : { ...explanation, window };
 }

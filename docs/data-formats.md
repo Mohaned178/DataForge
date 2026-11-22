@@ -157,6 +157,33 @@ unless its rate is above 0**. Unknown fields are rejected. Rates are per-event p
 Limits: delays and offsets up to 30 days, `distance` up to 50, `copies` up to 10, `failures` and
 `maxRetries` up to 20. Example profiles are in `chaos-profiles/`.
 
+### Windowing contract and late fault (optional, Milestone 5)
+
+```jsonc
+{
+  "formatVersion": 1,
+  "name": "late-data",
+  "windowing": { "sizeMs": 3600000, "allowedLatenessMs": 600000 },   // allowedLatenessMs defaults to 0
+  "faults": {
+    "late": { "rate": 0.05, "lateByMs": { "min": 60000, "max": 1800000 } }   // needs "windowing"
+  }
+}
+```
+
+`windowing` is the contract of the pipeline under test: tumbling event-time windows of `sizeMs`
+(1 s to 30 days), aligned to the scenario epoch, and how long after its end a window still accepts
+events (`allowedLatenessMs`, 0 to 30 days). A window `[start, start + sizeMs)` **closes** when the
+target's *stream time* (the largest event time it has received) reaches `start + sizeMs +
+allowedLatenessMs`. Both sections are optional and absent unless given, so a profile without them
+resolves exactly as before Milestone 5.
+
+| Fault | Applies to | Effect |
+| --- | --- | --- |
+| `late` | events whose window closes before the last delivered event | The original attempt is delivered 1 ms after the first delivery of an event whose event time is at least `lateByMs` past the close of this event's window (the last delivered event, if the log ends sooner). So the event always arrives after its window has closed. Applied after `delay` and before `reorder`. |
+
+Example profiles: `windowed-none` (windows, no faults), `windowed-delays` (delays within the
+lateness, duplicates), `late-data` (5% late events).
+
 ## Plan directory (`dataforge chaos plan --out <dir>`)
 
 | File | Content |
@@ -193,12 +220,13 @@ run directory is never written to.
 | Fault record | Meaning |
 | --- | --- |
 | `{"type":"delay","delayMs"}` | Held back by `delayMs`. |
+| `{"type":"late","windowCloseMs","behindEventId","shiftMs"}` | Held until just after `behindEventId`, an event past `windowCloseMs` (the close of this event's window), `shiftMs` later than it would otherwise have been. |
 | `{"type":"reorder","behindEventId","distance","shiftMs"}` | Moved behind `behindEventId`, `shiftMs` later than it would otherwise have been. |
 | `{"type":"transientFailure","failure","failures"}` | This attempt is failure `failure` of the `failures` planned for the event. |
 | `{"type":"duplicate","copy","copies"}` | This attempt is copy `copy` of `copies`. |
 
 An attempt's time is always explained by its records: an original is at
-`eventTimeMs + delayMs + shiftMs`; a retry or duplicate is at its `derivedFrom` attempt's time plus
+`eventTimeMs + delayMs + shiftMs` (late, then reorder); a retry or duplicate is at its `derivedFrom` attempt's time plus
 `offsetMs`. Delivery order is `scheduledDeliveryTimeMs`, then `eventSequence`, then
 `attemptNumber`.
 
@@ -237,6 +265,22 @@ first delivered attempt with the other events of its aggregate. An event is out 
 later version of its aggregate reaches the target first. It counts whatever caused it (delay,
 reorder or retries). Lost events are left out.
 
+For a profile with a windowing contract the summary has two more entries (absent otherwise):
+
+```jsonc
+"faults": { ..., "late": { "rate": 0.05, "eligibleEvents": 456, "faultedEvents": 21 } },   // only when the profile has "late"
+"windowing": {
+  "sizeMs": 3600000, "allowedLatenessMs": 600000,
+  "arrivals": { "onTime": 219, "withinLateness": 0, "afterClose": 9, "lost": 0 }
+}
+```
+
+`arrivals` classifies the first arrival of every event the windows count (OrderCreated and
+PaymentCompleted) by the stream time just before it: `onTime` (its window had not ended),
+`withinLateness` (ended, not closed), `afterClose` (closed: a pipeline with this lateness drops it),
+`lost`. Any fault can make an event arrive after close, not only `late` (a long delay or a reorder
+can too).
+
 ## Actual state (what a target reports; input to `dataforge validate --actual`)
 
 ```jsonc
@@ -262,11 +306,34 @@ byte order mark is accepted.
 
 `dataforge deliver` writes it sorted by ID in canonical JSON, like `expected-state.json`.
 
+## Actual windows (what a windowed target reports; `actual-windows.json`)
+
+```jsonc
+{
+  "format": "dataforge.actual-windows",
+  "formatVersion": 1,
+  "windows": [
+    { "windowStartMs": 18000000, "windowEndMs": 21600000, "ordersCreated": 4, "paymentsCompleted": 3, "revenueMinor": 63540 }
+  ]
+}
+```
+
+Per-window metrics in simulation milliseconds since the epoch, in any order: `ordersCreated` (the
+window's OrderCreated events), `paymentsCompleted` (its PaymentCompleted events) and `revenueMinor`
+(their amounts, in minor units of the catalog currency). A window missing from the list counts as
+zeros. Like the actual state, the format checks shape (unknown fields and non-integers are rejected
+with their path), not correctness: a misaligned window or a window listed twice is a finding.
+
+The **expected windows** are not a file: `validate` computes them from the canonical log for the
+plan's window size. Every counted event is in the window of its event time, exactly once, whatever
+its delivery. They add up to the expected state's orders and revenue.
+
 ## Delivery directory (`dataforge deliver --out <dir>`, either transport)
 
 | File | Content |
 | --- | --- |
 | `actual-state.json` | The state the target ended in, in the actual-state format. |
+| `actual-windows.json` | Only for a plan with a windowing contract: the target's per-window metrics. |
 | `target-run.json` | Which target consumed which plan of which run, and what happened. |
 
 ```jsonc
@@ -283,6 +350,10 @@ byte order mark is accepted.
   "files": { "actual-state.json": { "sha256": "...", "bytes": 135176 } }
 }
 ```
+
+For a windowed plan, `target-run.json` also has `"windowing": { "sizeMs", "allowedLatenessMs" }`, an
+`actual-windows.json` entry in `files`, and, for the correct target, the counter
+`windowEventsDropped` (events not counted because they arrived after their window closed).
 
 `validate` uses it when it sits next to an `actual-state.json`: it refuses an actual state delivered
 from another run, refuses `--plan` when it is not the plan the target consumed, and reports
@@ -366,7 +437,9 @@ with several, only within each partition.
 ```
 
 The consumer knows nothing of runs or plans; the delivering process checks the actual state's
-checksum against this report and binds both to the run and plan in `target-run.json`.
+checksum against this report and binds both to the run and plan in `target-run.json`. Started with
+`--window-size-ms` (and `--allowed-lateness-ms`), the consumer also writes `actual-windows.json`, and
+the report gains `windowing` and an `actual-windows.json` entry in `files`.
 
 ### Kafka run (`kafka-run.json`)
 
@@ -436,6 +509,51 @@ deliveries (any fault, not exactly one delivery, or overtaken within the aggrega
 entity depends on, most likely first; an empty list with `hints: true` means no delivery fault
 explains the finding. `rootCauses` groups findings by their first cause. The report contains no
 timestamps or paths, so it is reproducible byte for byte.
+
+### Windows section (only when windows were validated)
+
+`validate` checks windows when the actual state comes with `actual-windows.json` (or `--windows`)
+and the plan, or `target-run.json`, has a windowing contract; one without the other is refused
+(exit code 2). The report then has a `windows` key, and `target.windowsEditedAfterDelivery`:
+
+```jsonc
+"windows": {
+  "windowing": { "sizeMs": 3600000, "allowedLatenessMs": 600000 },
+  "hints": true,
+  "checked": { "expected": 41, "actual": 41 },          // windows with a counted event; windows the target listed
+  "counts": { "findings": 7, "byCategory": { "window-undercount": 7, "window-overcount": 0, "duplicate-window": 0,
+              "misaligned-window": 0 }, "explained": 7, "unexplained": 0 },
+  "findings": [
+    {
+      "category": "window-undercount",
+      "windowStartMs": 50400000, "windowEndMs": 54000000,
+      "message": "paymentsCompleted is 3, expected 4; revenueMinor is 61320, expected 83806",
+      "differences": [ { "field": "paymentsCompleted", "expected": 4, "actual": 3 }, ... ],
+      "causes": [
+        { "eventId": "evt_ord_000012_2", "eventType": "PaymentCompleted", "eventTimeMs": 50730532,
+          "windowStartMs": 50400000, "windowCloseMs": 54600000, "arrival": "after-close",
+          "firstDeliveryTimeMs": 55773887, "streamTimeMs": 55773886, "deliveries": 1,
+          "arrivalWindowStartsMs": [54000000], "faults": ["late"] }
+      ]
+    }
+  ]
+}
+```
+
+| Category | Meaning |
+| --- | --- |
+| `window-undercount` | A metric below its true value: events dropped (after close, or too early), lost, or counted in another window. |
+| `window-overcount` | A metric above its true value: events counted more than once, or events of another window counted here. |
+| `duplicate-window` | The same window start listed more than once (the first is compared). |
+| `misaligned-window` | A window that is not `[k * sizeMs, (k + 1) * sizeMs)`; its values are not compared. |
+
+Window causes are the counted events whose delivery was abnormal (any fault, not exactly one
+delivery, an arrival other than on time, or a copy delivered during another window). For a short
+window: its own events, lost or after close first, then within the lateness (a pipeline must still
+count those), then delivered during another window. For a long window: its own events delivered more
+than once, then events of other windows delivered during it. `arrival` and `streamTimeMs` are
+computed from the plan exactly as described for `arrivals` in the delivery summary. Window findings
+make the verdict `FAIL` like entity findings.
 
 ### State invariants
 

@@ -2,6 +2,7 @@ import { fork, type ChildProcess } from 'node:child_process';
 import { closeSync, existsSync, openSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { consumerToParentSchema } from '@dataforge/kafka';
+import type { WindowingSpec } from '@dataforge/core';
 import type { ReferenceTargetName } from '@dataforge/targets';
 
 const READY_TIMEOUT_MS = 30_000;
@@ -26,6 +27,8 @@ export interface ConsumerProcessOptions {
   readonly outDirectory: string;
   /** Where the consumer's stdout and stderr (including its Kafka client log) go. */
   readonly logPath: string;
+  /** Passed on, so the consumer's target computes the same windows as in process. */
+  readonly windowing: WindowingSpec | undefined;
 }
 
 /** The built entry point of @dataforge/consumer; the consumer runs as compiled JavaScript in its own process. */
@@ -91,7 +94,13 @@ export class ConsumerProcess {
     const startedAt = Date.now();
     const child = fork(
       entry,
-      ['--brokers', options.brokers.join(','), '--topic', options.topic, '--group', options.groupId, '--target', options.target, '--out', options.outDirectory, '--force'],
+      [
+        ...['--brokers', options.brokers.join(','), '--topic', options.topic, '--group', options.groupId, '--target', options.target],
+        ...['--out', options.outDirectory, '--force'],
+        ...(options.windowing === undefined
+          ? []
+          : ['--window-size-ms', String(options.windowing.sizeMs), '--allowed-lateness-ms', String(options.windowing.allowedLatenessMs)]),
+      ],
       { stdio: ['ignore', logFd, logFd, 'ipc'], execArgv: [], env: process.env },
     );
     closeSync(logFd);

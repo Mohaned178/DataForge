@@ -26,7 +26,7 @@ function sendThenExit(message: ConsumerToParent | undefined, code: number): void
 }
 
 async function main(options: ConsumerOptions): Promise<void> {
-  const target = createReferenceTarget(options.target);
+  const target = createReferenceTarget(options.target, options.windowing === undefined ? {} : { windowing: options.windowing });
   const kafka = createKafkaClient({ brokers: options.brokers, clientId: `dataforge-consumer-${options.target}`, log: err });
   const runner = new ConsumerRunner({ kafka, topic: options.topic, groupId: options.groupId, target });
   let finishing = false;
@@ -54,7 +54,9 @@ async function main(options: ConsumerOptions): Promise<void> {
           `  consumed    ${report.messages} records: ${report.distinctEvents} distinct events, ${report.redeliveries} redeliveries` +
             (report.kafkaRedeliveries > 0 ? `, ${report.kafkaRedeliveries} handed over twice by Kafka` : ''),
         );
-        out(`  output      ${options.out} (actual-state.json, consumer-report.json, processing-log.jsonl)`);
+        out(
+          `  output      ${options.out} (actual-state.json, ${options.windowing === undefined ? '' : 'actual-windows.json, '}consumer-report.json, processing-log.jsonl)`,
+        );
         sendThenExit({ type: 'finished' }, 0);
       })
       .catch((error: unknown) => {

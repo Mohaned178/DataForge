@@ -1,0 +1,10 @@
+{
+  "formatVersion": 1,
+  "name": "windowed-delays",
+  "description": "Hourly event-time windows with 10 minutes of allowed lateness. 30% of events are delayed by up to 9 minutes (always within the lateness) and 5% are duplicated: a correct windowed pipeline still gets every window right.",
+  "windowing": { "sizeMs": 3600000, "allowedLatenessMs": 600000 },
+  "faults": {
+    "delay": { "rate": 0.3, "delayMs": { "min": 1000, "max": 540000 } },
+    "duplicate": { "rate": 0.05, "copies": { "min": 1, "max": 1 }, "redeliveryOffsetMs": { "min": 0, "max": 120000 } }
+  }
+}

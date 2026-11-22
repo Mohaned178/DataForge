@@ -1,5 +1,5 @@
 import { join, normalize } from 'node:path';
-import { canonicalJson, type CanonicalEvent } from '@dataforge/core';
+import { canonicalJson, type CanonicalEvent, type WindowingSpec } from '@dataforge/core';
 import type { DeliveryAttempt } from '@dataforge/chaos';
 import type { Speed } from '@dataforge/kafka';
 import type { ReferenceTargetName } from '@dataforge/targets';
@@ -12,6 +12,7 @@ const COUNTER_LABELS: Record<string, string> = {
   duplicatesIgnored: 'redeliveries ignored (eventId already received)',
   eventsParked: 'events parked until their predecessor or referenced entities arrived',
   updatesLost: 'updates lost (the row did not exist yet when the message arrived)',
+  windowEventsDropped: 'events not counted in their window: they arrived after it closed',
 };
 
 /** What a delivery reads, whatever the transport: a run, its plan, and where the target's state goes. */
@@ -24,6 +25,8 @@ export interface DeliveryInputs {
   readonly events: readonly CanonicalEvent[];
   readonly summaryFile: DeliverySummaryFile;
   readonly attempts: readonly DeliveryAttempt[];
+  /** The plan's windowing contract, when it has one: the target then also computes windows. */
+  readonly windowing: WindowingSpec | undefined;
   /** The paths as the user typed them, for the suggested next command. */
   readonly typed: { readonly run: string; readonly plan: string; readonly out: string };
 }
@@ -67,6 +70,10 @@ export function printDeliveryOutcome(io: CliIo, inputs: DeliveryInputs, targetRu
   );
   io.out(`  output      ${inputs.outDirectory}`);
   io.out(`                ${padRight(DELIVERY_FILES.actualState, 28)} sha256 ${targetRun.files[DELIVERY_FILES.actualState].sha256}`);
+  const windowsFile = targetRun.files[DELIVERY_FILES.actualWindows];
+  if (windowsFile !== undefined) {
+    io.out(`                ${padRight(DELIVERY_FILES.actualWindows, 28)} sha256 ${windowsFile.sha256}`);
+  }
   io.out(`                ${DELIVERY_FILES.targetRun}`);
   for (const file of moreFiles) {
     io.out(`                ${file}`);

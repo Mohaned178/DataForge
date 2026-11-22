@@ -1,6 +1,7 @@
 import { z } from 'zod';
-import type { CanonicalEvent } from '@dataforge/core';
+import { windowCloseOf, windowStartOf, type CanonicalEvent } from '@dataforge/core';
 import type { ChaosProfile } from '../profile/chaos-profile';
+import { classifyArrivals, countWindowedArrivals } from './arrivals';
 import { ATTEMPT_KINDS, PLANNED_OUTCOMES, type AttemptKind, type DeliveryAttempt, type PlannedOutcome } from './delivery-attempt';
 
 const count = z.number().int().min(0);
@@ -30,6 +31,8 @@ export const deliverySummarySchema = z.strictObject({
     duplicate: z.strictObject({ ...faultTally, extraDeliveries: count }),
     /** Every event is eligible. */
     transientFailure: z.strictObject({ ...faultTally, failedAttempts: count, lostEvents: count }),
+    /** Only when the profile enables it. Events whose window closes before the last delivered event time. */
+    late: z.strictObject(faultTally).optional(),
   }),
   /** Order as the target sees it: each event's first delivered attempt, compared within its aggregate. */
   ordering: z.strictObject({
@@ -40,6 +43,15 @@ export const deliverySummarySchema = z.strictObject({
     aggregatesAffected: count,
   }),
   lastScheduledDeliveryTimeMs: count,
+  /** Only for a profile with a windowing contract. */
+  windowing: z
+    .strictObject({
+      sizeMs: count,
+      allowedLatenessMs: count,
+      /** First arrivals of the events windows count (OrderCreated, PaymentCompleted), by stream time. */
+      arrivals: z.strictObject({ onTime: count, withinLateness: count, afterClose: count, lost: count }),
+    })
+    .optional(),
 });
 
 export type DeliverySummary = z.output<typeof deliverySummarySchema>;
@@ -83,7 +95,13 @@ export function summarizeDeliveryPlan(
 ): DeliverySummary {
   const attemptsByKind = Object.fromEntries(ATTEMPT_KINDS.map((kind) => [kind, 0])) as Record<AttemptKind, number>;
   const attemptsByOutcome = Object.fromEntries(PLANNED_OUTCOMES.map((outcome) => [outcome, 0])) as Record<PlannedOutcome, number>;
-  const faulted = { delay: new Set<string>(), reorder: new Set<string>(), duplicate: new Set<string>(), transientFailure: new Set<string>() };
+  const faulted = {
+    delay: new Set<string>(),
+    late: new Set<string>(),
+    reorder: new Set<string>(),
+    duplicate: new Set<string>(),
+    transientFailure: new Set<string>(),
+  };
   const deliveredEvents = new Set<string>();
   let failedAttempts = 0;
   let lastScheduledDeliveryTimeMs = 0;
@@ -126,7 +144,7 @@ export function summarizeDeliveryPlan(
   }
 
   const { delay, reorder, duplicate, transientFailure } = profile.faults;
-  return {
+  const summary: DeliverySummary = {
     events: events.length,
     attempts: attempts.length,
     attemptsByKind,
@@ -153,4 +171,26 @@ export function summarizeDeliveryPlan(
     ordering: { outOfOrderEvents, inversionPairs, aggregatesAffected },
     lastScheduledDeliveryTimeMs,
   };
+
+  const { windowing } = profile;
+  if (windowing !== undefined) {
+    if (profile.faults.late !== undefined) {
+      let latestDeliveredTimeMs = -1;
+      for (const event of events) {
+        if (deliveredEvents.has(event.eventId)) {
+          latestDeliveredTimeMs = Math.max(latestDeliveredTimeMs, event.eventTimeMs);
+        }
+      }
+      const eligibleEvents = events.filter(
+        (event) => windowCloseOf(windowStartOf(event.eventTimeMs, windowing.sizeMs), windowing) <= latestDeliveredTimeMs,
+      ).length;
+      summary.faults.late = { rate: profile.faults.late.rate, eligibleEvents, faultedEvents: faulted.late.size };
+    }
+    summary.windowing = {
+      sizeMs: windowing.sizeMs,
+      allowedLatenessMs: windowing.allowedLatenessMs,
+      arrivals: countWindowedArrivals(classifyArrivals(attempts, windowing)),
+    };
+  }
+  return summary;
 }

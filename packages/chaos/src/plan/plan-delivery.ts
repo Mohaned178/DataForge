@@ -1,4 +1,13 @@
-import { RandomStream, normalizeSeed, serializeEventLog, sha256Hex, type CanonicalEvent } from '@dataforge/core';
+import {
+  RandomStream,
+  normalizeSeed,
+  serializeEventLog,
+  sha256Hex,
+  windowCloseOf,
+  windowStartOf,
+  type CanonicalEvent,
+  type WindowingSpec,
+} from '@dataforge/core';
 import { chaosProfileHash, type ChaosProfile, type FaultType } from '../profile/chaos-profile';
 import { PLANNER_VERSION } from '../version';
 import { attemptId, type DeliveryAttempt, type FaultRecord } from './delivery-attempt';
@@ -25,6 +34,8 @@ export interface DeliveryPlan {
 /** The random choices made for one event. Each fault type draws only from its own stream. */
 interface FaultDecisions {
   readonly delayMs: number | undefined;
+  /** How far past its window's close (in stream time) a late event arrives. */
+  readonly lateByMs: number | undefined;
   readonly reorderDistance: number | undefined;
   readonly failures: number;
   readonly retryBackoffsMs: readonly number[];
@@ -42,10 +53,15 @@ type MutableAttempt = { -readonly [Key in keyof DeliveryAttempt]: DeliveryAttemp
  * fault type never changes which events another selects. The decisions then compose into a schedule:
  *
  *   1. delay:     original attempt at eventTimeMs + delayMs
- *   2. reorder:   moved to 1 ms after the first delivery of the k-th later event of its aggregate
- *   3. transient: the first `failures` attempts fail, each retried after a backoff; with more
+ *   2. late:      moved to 1 ms after the first delivery of an event whose event time is at least
+ *                 lateByMs past the close of this event's window, so it arrives after the close
+ *   3. reorder:   moved to 1 ms after the first delivery of the k-th later event of its aggregate
+ *   4. transient: the first `failures` attempts fail, each retried after a backoff; with more
  *                 failures than maxRetries the event is lost (only when the profile allows loss)
- *   4. duplicate: extra copies of the first delivered attempt, after a redelivery offset
+ *   5. duplicate: extra copies of the first delivered attempt, after a redelivery offset
+ *
+ * Late and reorder anchors always have a larger event time than the event they hold back, so
+ * planning from the last canonical event to the first makes every anchor final before it is used.
  *
  * Attempts are delivered in (scheduledDeliveryTimeMs, eventSequence, attemptNumber) order, so a
  * profile without faults delivers exactly the canonical order at event time.
@@ -54,24 +70,27 @@ export function planDelivery(input: DeliveryPlanInput): DeliveryPlan {
   const chaosSeed = normalizeSeed(input.chaosSeed);
   const { events, profile } = input;
   const aggregates = indexAggregates(events);
+  const lateAnchors = new LateAnchors(events);
 
   const attemptsByEvent = new Map<string, MutableAttempt[]>();
   const anchorTimeByEvent = new Map<string, number>();
 
-  for (const aggregate of aggregates.values()) {
-    // Latest version first: a reordered event is anchored behind a later event of its aggregate,
-    // whose schedule is therefore already final.
-    for (let index = aggregate.length - 1; index >= 0; index--) {
-      const event = aggregate[index] as CanonicalEvent;
-      const later = aggregate.length - 1 - index;
-      const decisions = decideFaults(chaosSeed, profile, event);
-      const attempts = scheduleEvent(event, decisions, profile, (distance) => {
+  for (let position = events.length - 1; position >= 0; position--) {
+    const event = events[position] as CanonicalEvent;
+    const aggregate = aggregates.get(event.aggregateId) as CanonicalEvent[];
+    const index = event.aggregateVersion - 1;
+    const decisions = decideFaults(chaosSeed, profile, event);
+    const attempts = scheduleEvent(event, decisions, profile, {
+      laterEventsInAggregate: aggregate.length - 1 - index,
+      reorderTarget: (distance) => {
         const target = aggregate[index + distance] as CanonicalEvent;
         return { eventId: target.eventId, anchorTimeMs: anchorTimeByEvent.get(target.eventId) as number };
-      }, later);
-      attemptsByEvent.set(event.eventId, attempts);
-      anchorTimeByEvent.set(event.eventId, anchorTime(attempts));
-    }
+      },
+      lateTarget: (lateByMs, windowing) => lateAnchors.after(event, lateByMs, windowing),
+    });
+    attemptsByEvent.set(event.eventId, attempts);
+    anchorTimeByEvent.set(event.eventId, anchorTime(attempts));
+    lateAnchors.record(position, attempts.find((attempt) => attempt.plannedOutcome === 'delivered'));
   }
 
   const ordered = [...attemptsByEvent.values()].flat().sort(compareDeliveryOrder);
@@ -99,10 +118,16 @@ function faultStream(chaosSeed: string, faultType: FaultType, eventId: string): 
 }
 
 function decideFaults(chaosSeed: string, profile: ChaosProfile, event: CanonicalEvent): FaultDecisions {
-  const { delay, reorder, duplicate, transientFailure } = profile.faults;
+  const { delay, late, reorder, duplicate, transientFailure } = profile.faults;
 
   const delayStream = faultStream(chaosSeed, 'delay', event.eventId);
   const delayMs = delayStream.chance(delay.rate) ? delayStream.intInRange(delay.delayMs) : undefined;
+
+  let lateByMs: number | undefined;
+  if (late !== undefined) {
+    const lateStream = faultStream(chaosSeed, 'late', event.eventId);
+    lateByMs = lateStream.chance(late.rate) ? lateStream.intInRange(late.lateByMs) : undefined;
+  }
 
   const reorderStream = faultStream(chaosSeed, 'reorder', event.eventId);
   const reorderDistance = reorderStream.chance(reorder.rate) ? reorderStream.intInRange(reorder.distance) : undefined;
@@ -129,22 +154,31 @@ function decideFaults(chaosSeed: string, profile: ChaosProfile, event: Canonical
     duplicateOffsetsMs.sort((a, b) => a - b);
   }
 
-  return { delayMs, reorderDistance, failures, retryBackoffsMs, duplicateOffsetsMs };
+  return { delayMs, lateByMs, reorderDistance, failures, retryBackoffsMs, duplicateOffsetsMs };
 }
 
-function scheduleEvent(
-  event: CanonicalEvent,
-  decisions: FaultDecisions,
-  profile: ChaosProfile,
-  reorderTarget: (distance: number) => { eventId: string; anchorTimeMs: number },
-  laterEventsInAggregate: number,
-): MutableAttempt[] {
+interface Anchors {
+  readonly laterEventsInAggregate: number;
+  readonly reorderTarget: (distance: number) => { eventId: string; anchorTimeMs: number };
+  readonly lateTarget: (lateByMs: number, windowing: WindowingSpec) => LateAnchor | undefined;
+}
+
+function scheduleEvent(event: CanonicalEvent, decisions: FaultDecisions, profile: ChaosProfile, anchors: Anchors): MutableAttempt[] {
+  const { laterEventsInAggregate, reorderTarget } = anchors;
   const originalFaults: FaultRecord[] = [];
   let timeMs = event.eventTimeMs;
 
   if (decisions.delayMs !== undefined) {
     timeMs += decisions.delayMs;
     originalFaults.push({ type: 'delay', delayMs: decisions.delayMs });
+  }
+
+  const late =
+    decisions.lateByMs === undefined || profile.windowing === undefined ? undefined : anchors.lateTarget(decisions.lateByMs, profile.windowing);
+  if (late !== undefined) {
+    const lateMs = Math.max(timeMs, late.anchorTimeMs + 1);
+    originalFaults.push({ type: 'late', windowCloseMs: late.windowCloseMs, behindEventId: late.eventId, shiftMs: lateMs - timeMs });
+    timeMs = lateMs;
   }
 
   if (decisions.reorderDistance !== undefined && laterEventsInAggregate > 0) {
@@ -211,6 +245,76 @@ function anchorTime(attempts: readonly DeliveryAttempt[]): number {
     throw new RangeError('Every event has at least one delivery attempt');
   }
   return anchor.scheduledDeliveryTimeMs;
+}
+
+interface LateAnchor {
+  readonly eventId: string;
+  readonly anchorTimeMs: number;
+  readonly windowCloseMs: number;
+}
+
+/**
+ * Finds where a late event must wait: just after the first delivery of an event whose event time is
+ * at least `lateByMs` past the close of its window. Once that event has reached the target, so has a
+ * stream time past the close. Filled from the last canonical event to the first, so every candidate
+ * (always later in canonical order) is final when it is looked up.
+ */
+class LateAnchors {
+  /** Per canonical position: the earliest first delivery among the events from there to the end. */
+  private readonly earliestFrom: ({ readonly eventId: string; readonly timeMs: number } | undefined)[];
+  /** Position of the last event that is delivered at all (a lost event never advances stream time). */
+  private lastDelivered: number | undefined;
+
+  constructor(private readonly events: readonly CanonicalEvent[]) {
+    this.earliestFrom = new Array<undefined>(events.length + 1).fill(undefined);
+  }
+
+  record(position: number, firstDelivered: DeliveryAttempt | undefined): void {
+    const next = this.earliestFrom[position + 1];
+    const own = firstDelivered === undefined ? undefined : { eventId: firstDelivered.eventId, timeMs: firstDelivered.scheduledDeliveryTimeMs };
+    // On equal times the earlier canonical position is delivered first.
+    this.earliestFrom[position] = own !== undefined && (next === undefined || own.timeMs <= next.timeMs) ? own : next;
+    if (own !== undefined && this.lastDelivered === undefined) {
+      this.lastDelivered = position;
+    }
+  }
+
+  /**
+   * The anchor for a late event, or undefined when no delivered event lies past the close (the
+   * window closes after the log ends). When the log ends sooner than `lateByMs` past the close, the
+   * last delivered event's time is the target instead.
+   */
+  after(event: CanonicalEvent, lateByMs: number, windowing: WindowingSpec): LateAnchor | undefined {
+    const windowCloseMs = windowCloseOf(windowStartOf(event.eventTimeMs, windowing.sizeMs), windowing);
+    if (this.lastDelivered === undefined) {
+      return undefined;
+    }
+    const latestDeliveredTimeMs = (this.events[this.lastDelivered] as CanonicalEvent).eventTimeMs;
+    if (latestDeliveredTimeMs < windowCloseMs) {
+      return undefined;
+    }
+    const streamTimeMs = Math.min(windowCloseMs + lateByMs, latestDeliveredTimeMs);
+    const anchor = this.earliestFrom[this.firstPositionAtOrAfter(streamTimeMs)];
+    if (anchor === undefined) {
+      throw new RangeError(`No delivered event at or after ${streamTimeMs} ms, although one was found at ${latestDeliveredTimeMs} ms`);
+    }
+    return { eventId: anchor.eventId, anchorTimeMs: anchor.timeMs, windowCloseMs };
+  }
+
+  /** Canonical order is sorted by event time, so the first event at or after an instant is found by bisection. */
+  private firstPositionAtOrAfter(timeMs: number): number {
+    let low = 0;
+    let high = this.events.length;
+    while (low < high) {
+      const middle = Math.floor((low + high) / 2);
+      if ((this.events[middle] as CanonicalEvent).eventTimeMs < timeMs) {
+        low = middle + 1;
+      } else {
+        high = middle;
+      }
+    }
+    return low;
+  }
 }
 
 /** Groups a canonical log by aggregate, checking the invariants the planner relies on. */

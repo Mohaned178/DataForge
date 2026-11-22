@@ -1,11 +1,13 @@
 import { existsSync } from 'node:fs';
 import { z } from 'zod';
+import type { WindowingSpec } from '@dataforge/core';
 import { UsageError } from './cli-io';
 import { PLAN_FILES, type DeliverySummaryFile } from './plan-directory';
 import { fileEntry, fileEntrySchema, readRunFile, type RunManifest } from './run-directory';
 
 export const DELIVERY_FILES = {
   actualState: 'actual-state.json',
+  actualWindows: 'actual-windows.json',
   targetRun: 'target-run.json',
 } as const;
 
@@ -27,7 +29,12 @@ export const targetRunFileSchema = z.strictObject({
   delivery: z.strictObject({ messages: count, distinctEvents: count, redeliveries: count, failedAttempts: count }),
   counters: z.record(z.string(), count),
   parkedEventIds: z.array(z.string()),
-  files: z.strictObject({ [DELIVERY_FILES.actualState]: fileEntrySchema }),
+  /** Only for a plan with a windowing contract: the one the target computed its windows under. */
+  windowing: z.strictObject({ sizeMs: count, allowedLatenessMs: count }).optional(),
+  files: z.strictObject({
+    [DELIVERY_FILES.actualState]: fileEntrySchema,
+    [DELIVERY_FILES.actualWindows]: fileEntrySchema.optional(),
+  }),
 });
 
 export type TargetRunFile = z.output<typeof targetRunFileSchema>;
@@ -63,6 +70,8 @@ export interface TargetRunInput {
   readonly counters: Readonly<Record<string, number>>;
   readonly parkedEventIds: readonly string[];
   readonly actualStateText: string;
+  /** For a windowed plan: the contract and the serialized actual-windows.json. */
+  readonly windows?: { readonly windowing: WindowingSpec; readonly actualWindowsText: string };
 }
 
 /**
@@ -71,7 +80,7 @@ export interface TargetRunInput {
  */
 export function buildTargetRun(input: TargetRunInput): TargetRunFile {
   const { manifest, summaryFile } = input;
-  return {
+  const targetRun: TargetRunFile = {
     format: 'dataforge.target-run',
     formatVersion: 1,
     target: { name: input.target.name, description: input.target.description },
@@ -86,5 +95,13 @@ export function buildTargetRun(input: TargetRunInput): TargetRunFile {
     counters: { ...input.counters },
     parkedEventIds: [...input.parkedEventIds],
     files: { [DELIVERY_FILES.actualState]: fileEntry(input.actualStateText) },
+  };
+  if (input.windows === undefined) {
+    return targetRun;
+  }
+  return {
+    ...targetRun,
+    windowing: { sizeMs: input.windows.windowing.sizeMs, allowedLatenessMs: input.windows.windowing.allowedLatenessMs },
+    files: { ...targetRun.files, [DELIVERY_FILES.actualWindows]: fileEntry(input.windows.actualWindowsText) },
   };
 }

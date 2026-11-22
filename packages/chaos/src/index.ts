@@ -36,3 +36,11 @@ export {
   type FirstDelivery,
 } from './plan/summary';
 export { UnknownEventError, explainEvent, type EventExplanation } from './plan/explain';
+export {
+  ARRIVAL_CLASSES,
+  classifyArrivals,
+  countWindowedArrivals,
+  isWindowedEventType,
+  type ArrivalClass,
+  type EventArrival,
+} from './plan/arrivals';

@@ -19,7 +19,7 @@ export function canonicalLog(scenarioName: 'ecommerce-small' | 'ecommerce-standa
   return events;
 }
 
-export function exampleProfile(name: 'none' | 'spec-example' | 'flaky-network' | 'lossy'): ChaosProfile {
+export function exampleProfile(name: 'none' | 'spec-example' | 'flaky-network' | 'lossy' | 'windowed-delays' | 'late-data'): ChaosProfile {
   return parseChaosProfile(JSON.parse(readFileSync(join(REPO_ROOT, 'chaos-profiles', `${name}.json`), 'utf8')));
 }
 

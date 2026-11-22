@@ -1,6 +1,7 @@
-import { resolve } from 'node:path';
+import { rmSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
-import { serializeActualState } from '@dataforge/core';
+import { serializeActualState, serializeActualWindows } from '@dataforge/core';
 import { BrokerListError, DEFAULT_BROKERS, parseBrokers, type Speed } from '@dataforge/kafka';
 import { REFERENCE_TARGETS, createReferenceTarget, deliverInMemory, type ReferenceTargetName } from '@dataforge/targets';
 import { EXIT_OK, UsageError, type CliIo } from '../cli-io';
@@ -64,11 +65,15 @@ export function runDeliver(args: readonly string[], io: CliIo): number | Promise
   const outDirectory = resolve(values.out);
   const manifest = readManifest(runDirectory);
   const { events } = readIntactCanonicalLog(runDirectory, manifest);
-  const { summaryFile, attempts } = readPlanForRun(planDirectory, manifest);
+  const { summaryFile, attempts, profile } = readPlanForRun(planDirectory, manifest);
   if (samePath(outDirectory, runDirectory) || samePath(outDirectory, planDirectory)) {
     throw new UsageError('--out must be its own directory: the run and the plan it consumed stay untouched.');
   }
   prepareOutputDirectory(outDirectory, values.force, 'delivery files');
+  if (profile.windowing === undefined) {
+    // A plan without windows: a windows file left by an earlier delivery (--force) must not be validated.
+    rmSync(join(outDirectory, DELIVERY_FILES.actualWindows), { force: true });
+  }
   const inputs: DeliveryInputs = {
     targetName,
     runDirectory,
@@ -78,15 +83,17 @@ export function runDeliver(args: readonly string[], io: CliIo): number | Promise
     events,
     summaryFile,
     attempts,
+    windowing: profile.windowing,
     typed: { run: values.run, plan: values.plan, out: values.out },
   };
   return kafkaOptions === undefined ? deliverInProcess(inputs, io) : deliverThroughKafka(inputs, kafkaOptions, io);
 }
 
 function deliverInProcess(inputs: DeliveryInputs, io: CliIo): number {
-  const target = createReferenceTarget(inputs.targetName);
+  const target = createReferenceTarget(inputs.targetName, inputs.windowing === undefined ? {} : { windowing: inputs.windowing });
   const result = deliverInMemory({ events: inputs.events, attempts: inputs.attempts, target });
   const actualStateText = serializeActualState(result.actualState);
+  const actualWindowsText = result.windows === undefined ? undefined : serializeActualWindows(result.windows);
   const targetRun = buildTargetRun({
     target,
     manifest: inputs.manifest,
@@ -95,8 +102,12 @@ function deliverInProcess(inputs: DeliveryInputs, io: CliIo): number {
     counters: result.counters,
     parkedEventIds: result.parkedEventIds,
     actualStateText,
+    ...(inputs.windowing === undefined || actualWindowsText === undefined ? {} : { windows: { windowing: inputs.windowing, actualWindowsText } }),
   });
   writeRunFile(inputs.outDirectory, DELIVERY_FILES.actualState, actualStateText);
+  if (actualWindowsText !== undefined) {
+    writeRunFile(inputs.outDirectory, DELIVERY_FILES.actualWindows, actualWindowsText);
+  }
   writeTargetRun(inputs.outDirectory, targetRun);
 
   printDeliveryHeader(io, inputs, `DataForge deliver: target ${target.name} (${target.description})`);

@@ -91,7 +91,7 @@ Test-Case 'MV-4.2' 'Start Kafka and run the integration tests' {
     $it = Invoke-Pnpm @('test:integration')
     Assert-Exit $it 0 'pnpm test:integration'
     Assert-Match $it.Text 'Test Suites:\s+2 passed, 2 total' 'integration suites'
-    Assert-Match $it.Text 'Tests:\s+25 passed, 25 total' 'integration tests'
+    Assert-Match $it.Text 'Tests:\s+33 passed, 33 total' 'integration tests'
 }
 
 Test-Case 'MV-4.3' 'Zero faults through Kafka' {

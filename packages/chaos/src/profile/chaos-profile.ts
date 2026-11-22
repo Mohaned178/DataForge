@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { DAY_MS, MINUTE_MS, SECOND_MS, canonicalJson, sha256Hex } from '@dataforge/core';
+import { DAY_MS, MINUTE_MS, SECOND_MS, canonicalJson, sha256Hex, windowingSpecSchema } from '@dataforge/core';
 
 export const CHAOS_PROFILE_FORMAT_VERSION = 1;
 
@@ -11,7 +11,7 @@ export const CHAOS_PROFILE_LIMITS = {
   maxRetries: 20,
 } as const;
 
-export const FAULT_TYPES = ['delay', 'reorder', 'duplicate', 'transientFailure'] as const;
+export const FAULT_TYPES = ['delay', 'late', 'reorder', 'duplicate', 'transientFailure'] as const;
 export type FaultType = (typeof FAULT_TYPES)[number];
 
 function boundedInt(min: number, max: number) {
@@ -34,6 +34,11 @@ export const chaosProfileSchema = z
     }),
     name: z.string().trim().min(1).max(100),
     description: z.string().max(1_000).optional(),
+    /**
+     * The windowing contract of the pipeline under test (tumbling event-time windows and their
+     * allowed lateness). Optional: without it, nothing about windows is planned, delivered or validated.
+     */
+    windowing: windowingSpecSchema.optional(),
     faults: z
       .strictObject({
         delay: z
@@ -64,10 +69,28 @@ export const chaosProfileSchema = z
             allowLoss: z.boolean().default(false),
           })
           .prefault({}),
+        /**
+         * The event arrives after its window has closed: the target's stream time is at least
+         * `lateByMs` past the window's close when it arrives. Optional (absent means off), and only
+         * with `windowing`, which defines the close.
+         */
+        late: z
+          .strictObject({
+            rate,
+            lateByMs: intRange(0, CHAOS_PROFILE_LIMITS.maxDelayMs, { min: MINUTE_MS, max: 30 * MINUTE_MS }),
+          })
+          .optional(),
       })
       .prefault({}),
   })
   .superRefine((profile, ctx) => {
+    if (profile.faults.late !== undefined && profile.windowing === undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['faults', 'late'],
+        message: 'needs a "windowing" section: a late event is late relative to the close of its window',
+      });
+    }
     const failure = profile.faults.transientFailure;
     if (failure.rate > 0 && !failure.allowLoss && failure.failures.max > failure.maxRetries) {
       ctx.addIssue({

@@ -64,13 +64,14 @@ protocol are held to the same rules, and the executor reads time only from an in
 | `rules/` | The business rule registry (`defineRule`, `ECOMMERCE_RULES`) and the state invariants (`ECOMMERCE_INVARIANTS`), which check a whole final state. |
 | `projection/` | World state, `applyEvent`, strict replay with log-integrity checks, expected-state output, and the actual-state contract a target reports (`parseActualState`). |
 | `serialization/` | Canonical JSON (sorted keys) and locale-independent string comparison. |
+| `windows/` | The windowing contract (`windowingSpecSchema`), window math (start, close), the window metrics (`windowContribution`, the one definition of what a window counts), the expected windows of a canonical log, and the actual-windows contract (`parseActualWindows`). |
 
 ## Inside `@dataforge/chaos`
 
 | Folder | Responsibility |
 | --- | --- |
 | `profile/` | Chaos profile schema (Zod), defaults, the loss rule, profile hash. |
-| `plan/` | Delivery attempt model and JSONL format, `planDelivery()`, the summary (rates, losses, per-aggregate inversions), `explainEvent()`. |
+| `plan/` | Delivery attempt model and JSONL format, `planDelivery()`, the summary (rates, losses, per-aggregate inversions, arrivals), `explainEvent()`, and `classifyArrivals()`: when each event first reached the target relative to its window's close, in stream time. |
 
 The package only reads canonical events. It never changes them and never delivers anything: it
 decides *what* is delivered, *when*, and *with which faults*. Milestone 4 executes a plan through
@@ -82,9 +83,10 @@ Kafka.
 | --- | --- |
 | `validation/src/validate.ts` | Compares actual with expected state by entity ID, checks the invariants on the actual state, ranks root-cause hints, builds the result. |
 | `validation/src/delivery-index.ts` | Reduces a delivery plan to the events whose delivery was abnormal, per aggregate. |
+| `validation/src/windows.ts` | `validateWindows`: compares per-window metrics with the true windows and links each wrong window to the late, lost, misplaced or duplicated events behind it. |
 | `targets/src/transport/in-memory.ts` | Plays a plan into a target in delivery order; failed attempts never reach it. |
-| `targets/src/reference/correct.ts` | Idempotent, version-ordered, dependency-aware consumer built on the core projection. |
-| `targets/src/reference/naive.ts` | A consumer that assumes perfect delivery: upserts, last arrival wins, counts every copy. |
+| `targets/src/reference/correct.ts` | Idempotent, version-ordered, dependency-aware consumer built on the core projection; with a windowing contract, event-time windows that close in stream time and drop what arrives later. |
+| `targets/src/reference/naive.ts` | A consumer that assumes perfect delivery: upserts, last arrival wins, counts every copy; with a windowing contract, processing-time windows. |
 
 A target implements `Target` (`handle(message)`, `finish()`). A `DeliveryMessage` is what a target
 receives from any transport: key `aggregateId`, the canonical event, attempt headers.
@@ -201,6 +203,32 @@ With one partition the consumer sees exactly the planned order, so `actual-state
 `target-run.json` are byte-identical to `--transport memory`; `dataforge validate` reads them the
 same way.
 
+## Data flow (Milestone 5)
+
+```text
+chaos profile ── windowing { sizeMs, allowedLatenessMs }, faults.late (optional)
+                             │
+chaos plan: planned from the last canonical event to the first, so every anchor is final:
+  late:    original attempt 1 ms after the first delivery of an event at least lateByMs past
+           the close of its window (close = window end + allowed lateness)
+  summary: arrivals of OrderCreated/PaymentCompleted by stream time (classifyArrivals)
+                             │
+deliver (memory or Kafka): the target is created with the plan's windowing
+  correct: count each eventId once in its event-time window, unless stream time
+           (largest event time received) already passed the window's close
+  naive:   count every message in the window of its delivery time
+  ─▶ actual-state.json + actual-windows.json + target-run.json (records the windowing)
+                             │
+validate: expected windows = computeExpectedWindows(canonical log, sizeMs)   (the truth)
+          compare by window start ─▶ window-undercount / window-overcount / duplicate / misaligned
+          causes: the window's events lost, after close, within lateness, or delivered elsewhere;
+                  duplicates and events of other windows delivered during it
+          ─▶ console windows section + report "windows"
+```
+
+Inputs without a windowing contract take none of these paths, and produce the same bytes as in
+Milestone 4.
+
 ## Key concepts
 
 - **Canonical event**: a business fact in the simulated world, identified by `eventId`, positioned
@@ -222,6 +250,12 @@ same way.
   validator compares the two; it never looks inside the target.
 - **Finding and cause**: a finding is one way the actual state is wrong (one entity, one category);
   its causes are the delivery faults that could have produced it, most likely first.
+- **Window, stream time, close**: a window is a tumbling event-time interval `[start, start +
+  sizeMs)`, aligned to the scenario epoch. Stream time is the largest event time a target has
+  received. A window closes when stream time reaches its end plus the allowed lateness; an event of
+  that window arriving later arrives *after close*. Expected windows are the true values (every
+  event counted once in the window of its event time); dropping a late event is a finding, explained
+  by its late arrival.
 - **Engine version**: `ENGINE_VERSION` names the generation algorithm. Any change in output for the
   same scenario and seed requires a version bump; the golden test enforces this.
 

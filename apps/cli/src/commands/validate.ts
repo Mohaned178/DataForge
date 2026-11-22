@@ -1,15 +1,29 @@
-import { mkdirSync, writeFileSync } from 'node:fs';
-import { basename, dirname, resolve } from 'node:path';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { basename, dirname, join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
-import { ActualStateValidationError, canonicalJson, parseActualState, sha256Hex, type ActualState } from '@dataforge/core';
+import {
+  ActualStateValidationError,
+  ActualWindowsValidationError,
+  canonicalJson,
+  computeExpectedWindows,
+  parseActualState,
+  parseActualWindows,
+  parseUtcInstant,
+  sha256Hex,
+  type ActualState,
+  type ActualWindows,
+  type WindowingSpec,
+} from '@dataforge/core';
 import { FINDING_CATEGORIES, validate, type DeliveryCause, type Finding, type ValidationResult } from '@dataforge/validation';
 import { EXIT_FAILED, EXIT_OK, EXIT_USAGE, UsageError, formatCount, padRight, readJsonFile, type CliIo } from '../cli-io';
 import { DELIVERY_FILES, readTargetRun, type TargetRunFile } from '../delivery-directory';
 import { PLAN_FILES, readPlanForRun, type LoadedPlan } from '../plan-directory';
 import { RUN_FILES, readIntactCanonicalLog, readIntactExpectedState, readManifest, readRunFile, samePath } from '../run-directory';
+import { describeWindowing, printWindowSection } from '../windows-output';
 
 export const VALIDATE_USAGE =
-  'dataforge validate --run <directory> --actual <actual-state.json> [--plan <directory>] [--report <file.json>] [--limit <n>]';
+  'dataforge validate --run <directory> --actual <actual-state.json> [--plan <directory>] [--windows <actual-windows.json>]\n' +
+  '                    [--report <file.json>] [--limit <n>]';
 
 const DEFAULT_LIMIT = 20;
 const ROOT_CAUSE_LINES = 10;
@@ -25,6 +39,7 @@ export function runValidate(args: readonly string[], io: CliIo): number {
       plan: { type: 'string' },
       report: { type: 'string' },
       limit: { type: 'string' },
+      windows: { type: 'string' },
     },
     strict: true,
     allowPositionals: false,
@@ -76,14 +91,31 @@ export function runValidate(args: readonly string[], io: CliIo): number {
     targetRun !== undefined &&
     sha256Hex(readRunFile(dirname(actualPath), DELIVERY_FILES.actualState) ?? '') !== targetRun.files[DELIVERY_FILES.actualState].sha256;
 
-  const result = plan === undefined ? validate({ expected, actual }) : validate({ expected, actual, attempts: plan.attempts });
+  let windows: LoadedWindows | undefined;
+  try {
+    windows = loadWindows({ actualPath, explicit: values.windows, targetRun, plan, reportPath });
+  } catch (error) {
+    if (error instanceof ActualWindowsValidationError) {
+      io.err(`${resolve(values.windows ?? join(dirname(actualPath), DELIVERY_FILES.actualWindows))}: ${error.message}`);
+      return EXIT_USAGE;
+    }
+    throw error;
+  }
+  const windowsInput =
+    windows === undefined
+      ? {}
+      : { windows: { windowing: windows.windowing, expected: computeExpectedWindows(events, windows.windowing.sizeMs), actual: windows.actual } };
+  const result = validate({ expected, actual, ...windowsInput, ...(plan === undefined ? {} : { attempts: plan.attempts }) });
 
   if (reportPath !== undefined) {
     const report = {
       format: 'dataforge.validation-report',
       formatVersion: 1,
       source: { seed: manifest.seed, scenarioName: manifest.scenario.name, eventsSha256 },
-      target: targetRun === undefined ? null : { name: targetRun.target.name, editedAfterDelivery: edited },
+      target:
+        targetRun === undefined
+          ? null
+          : { name: targetRun.target.name, editedAfterDelivery: edited, ...(windows === undefined ? {} : { windowsEditedAfterDelivery: windows.edited }) },
       plan:
         plan === undefined
           ? null
@@ -98,15 +130,89 @@ export function runValidate(args: readonly string[], io: CliIo): number {
   printSummary(io, result);
   printRootCauses(io, result);
   printFindings(io, result, limit, reportPath !== undefined);
+  if (result.windows !== undefined && windows !== undefined) {
+    printWindowSection(io, {
+      result: result.windows,
+      epochUnixMs: parseUtcInstant(manifest.simulation.epoch),
+      windowsPath: windows.path,
+      edited: windows.edited,
+      limit,
+      hasReport: reportPath !== undefined,
+    });
+  }
   if (reportPath !== undefined) {
     io.out(`Report: ${reportPath}`);
   }
-  io.out(
-    result.verdict === 'PASS'
-      ? 'Result: PASS (the actual state matches the expected state and satisfies every invariant)'
-      : `Result: FAIL (${formatCount(result.counts.findings)} findings)`,
-  );
+  io.out(resultLine(result));
   return result.verdict === 'PASS' ? EXIT_OK : EXIT_FAILED;
+}
+
+function resultLine(result: ValidationResult): string {
+  if (result.windows === undefined) {
+    return result.verdict === 'PASS'
+      ? 'Result: PASS (the actual state matches the expected state and satisfies every invariant)'
+      : `Result: FAIL (${formatCount(result.counts.findings)} findings)`;
+  }
+  return result.verdict === 'PASS'
+    ? 'Result: PASS (the actual state matches the expected state and satisfies every invariant; every window has its true values)'
+    : `Result: FAIL (${formatCount(result.counts.findings)} findings, ${formatCount(result.windows.counts.findings)} window findings)`;
+}
+
+interface LoadedWindows {
+  readonly path: string;
+  readonly actual: ActualWindows;
+  readonly windowing: WindowingSpec;
+  readonly edited: boolean;
+}
+
+/**
+ * The target's windows and the contract to check them against. The windows come from --windows, or
+ * from actual-windows.json next to the actual state (listed in target-run.json when "dataforge deliver"
+ * wrote it); the contract comes from the plan the target consumed. Either one without the other is
+ * refused: windows cannot be judged without a contract, and a windowed plan must not pass unchecked.
+ */
+function loadWindows(input: {
+  readonly actualPath: string;
+  readonly explicit: string | undefined;
+  readonly targetRun: TargetRunFile | undefined;
+  readonly plan: LoadedPlan | undefined;
+  readonly reportPath: string | undefined;
+}): LoadedWindows | undefined {
+  const { targetRun, plan } = input;
+  const besideActual = join(dirname(input.actualPath), DELIVERY_FILES.actualWindows);
+  const listed = targetRun?.files[DELIVERY_FILES.actualWindows] !== undefined;
+  const path =
+    input.explicit !== undefined
+      ? resolve(input.explicit)
+      : listed || (targetRun === undefined && existsSync(besideActual))
+        ? besideActual
+        : undefined;
+  if (path !== undefined && (samePath(path, input.actualPath) || (input.reportPath !== undefined && samePath(path, input.reportPath)))) {
+    throw new UsageError('--windows must be its own file, not the actual state or the report.');
+  }
+  const windowing = plan?.profile.windowing ?? (targetRun?.windowing === undefined ? undefined : { ...targetRun.windowing });
+
+  if (path === undefined || (input.explicit === undefined && !existsSync(path))) {
+    if (windowing !== undefined) {
+      throw new UsageError(
+        `The plan defines event-time windows (${describeWindowing(windowing)}), but no windows were found for this target.\n` +
+          `Expected ${besideActual} (written by "dataforge deliver" for a windowed plan), or give --windows <file>.`,
+      );
+    }
+    return undefined;
+  }
+  if (windowing === undefined) {
+    throw new UsageError(
+      `${path} holds per-window metrics, but there is no windowing contract to check them against.\n` +
+        (plan === undefined
+          ? 'Add --plan <directory> with the windowed plan the target consumed.'
+          : `The plan (profile ${plan.summaryFile.profile.name}) has no "windowing" section.`),
+    );
+  }
+  const actual = parseActualWindows(readJsonFile(path, 'actual windows'));
+  const recorded = targetRun?.files[DELIVERY_FILES.actualWindows];
+  const edited = recorded !== undefined && samePath(path, besideActual) && sha256Hex(readRunFile(dirname(path), DELIVERY_FILES.actualWindows) ?? '') !== recorded.sha256;
+  return { path, actual, windowing, edited };
 }
 
 function parseLimit(text: string | undefined): number {

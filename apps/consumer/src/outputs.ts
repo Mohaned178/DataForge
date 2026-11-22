@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { canonicalJson, serializeActualState, sha256Hex } from '@dataforge/core';
+import { canonicalJson, serializeActualState, serializeActualWindows, sha256Hex } from '@dataforge/core';
 import { CONSUMER_FILES, serializeProcessingLog, type ConsumerOutcome, type ConsumerReport } from '@dataforge/kafka';
 import type { Target } from '@dataforge/targets';
 import { ConsumerUsageError, type ConsumerOptions } from './options';
@@ -16,9 +16,14 @@ export function prepareConsumerOutput(options: ConsumerOptions): void {
   }
 }
 
-/** Writes actual-state.json (the Milestone 3 actual-state format), processing-log.jsonl and consumer-report.json. */
+/**
+ * Writes actual-state.json (the Milestone 3 actual-state format), processing-log.jsonl and
+ * consumer-report.json, and actual-windows.json when the consumer has a windowing contract.
+ */
 export function writeConsumerOutput(options: ConsumerOptions, target: Target, outcome: ConsumerOutcome): ConsumerReport {
   const actualStateText = serializeActualState(outcome.result.actualState);
+  const { windows } = outcome.result;
+  const actualWindowsText = windows === undefined ? undefined : serializeActualWindows(windows);
   const processingLogText = serializeProcessingLog(outcome.processingLog);
   const report: ConsumerReport = {
     format: 'dataforge.consumer-report',
@@ -33,12 +38,17 @@ export function writeConsumerOutput(options: ConsumerOptions, target: Target, ou
     kafkaRedeliveries: outcome.kafkaRedeliveries,
     counters: { ...outcome.result.counters },
     parkedEventIds: [...outcome.result.parkedEventIds],
+    ...(options.windowing === undefined ? {} : { windowing: { ...options.windowing } }),
     files: {
       [CONSUMER_FILES.actualState]: fileEntry(actualStateText),
+      ...(actualWindowsText === undefined ? {} : { [CONSUMER_FILES.actualWindows]: fileEntry(actualWindowsText) }),
       [CONSUMER_FILES.processingLog]: fileEntry(processingLogText),
     },
   };
   writeFileSync(join(options.out, CONSUMER_FILES.actualState), actualStateText, { encoding: 'utf8' });
+  if (actualWindowsText !== undefined) {
+    writeFileSync(join(options.out, CONSUMER_FILES.actualWindows), actualWindowsText, { encoding: 'utf8' });
+  }
   writeFileSync(join(options.out, CONSUMER_FILES.processingLog), processingLogText, { encoding: 'utf8' });
   writeFileSync(join(options.out, CONSUMER_FILES.report), `${canonicalJson(report, 2)}\n`, { encoding: 'utf8' });
   return report;

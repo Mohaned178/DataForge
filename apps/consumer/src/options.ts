@@ -1,10 +1,11 @@
 import { parseArgs } from 'node:util';
+import { windowingSpecSchema, type WindowingSpec } from '@dataforge/core';
 import { DEFAULT_BROKERS, parseBrokers } from '@dataforge/kafka';
 import { REFERENCE_TARGETS, type ReferenceTargetName } from '@dataforge/targets';
 
 export const CONSUMER_USAGE =
   `dataforge-consumer --topic <topic> --group <consumer group> --target ${REFERENCE_TARGETS.join('|')} --out <directory> ` +
-  '[--brokers <host:port,...>] [--force]';
+  '[--brokers <host:port,...>] [--window-size-ms <ms> [--allowed-lateness-ms <ms>]] [--force]';
 
 export interface ConsumerOptions {
   readonly brokers: readonly string[];
@@ -13,6 +14,8 @@ export interface ConsumerOptions {
   readonly target: ReferenceTargetName;
   readonly out: string;
   readonly force: boolean;
+  /** With a windowing contract, the target also computes per-window metrics (actual-windows.json). */
+  readonly windowing: WindowingSpec | undefined;
 }
 
 export class ConsumerUsageError extends Error {
@@ -37,6 +40,8 @@ export function parseConsumerOptions(argv: readonly string[], env: Readonly<Reco
         target: { type: 'string' },
         out: { type: 'string' },
         force: { type: 'boolean', default: false },
+        'window-size-ms': { type: 'string' },
+        'allowed-lateness-ms': { type: 'string' },
       },
       strict: true,
       allowPositionals: false,
@@ -60,5 +65,23 @@ export function parseConsumerOptions(argv: readonly string[], env: Readonly<Reco
   } catch (error) {
     throw new ConsumerUsageError((error as Error).message);
   }
-  return { brokers, topic, groupId: group, target: target as ReferenceTargetName, out, force: values.force };
+  return { brokers, topic, groupId: group, target: target as ReferenceTargetName, out, force: values.force, windowing: parseWindowing(values) };
+}
+
+function parseWindowing(values: { 'window-size-ms'?: string | undefined; 'allowed-lateness-ms'?: string | undefined }): WindowingSpec | undefined {
+  const size = values['window-size-ms'];
+  const lateness = values['allowed-lateness-ms'];
+  if (size === undefined) {
+    if (lateness !== undefined) {
+      throw new ConsumerUsageError('--allowed-lateness-ms needs --window-size-ms.');
+    }
+    return undefined;
+  }
+  const number = (text: string) => (/^\d{1,12}$/.test(text) ? Number(text) : NaN);
+  const parsed = windowingSpecSchema.safeParse({ sizeMs: number(size), allowedLatenessMs: lateness === undefined ? 0 : number(lateness) });
+  if (!parsed.success) {
+    const issue = parsed.error.issues[0];
+    throw new ConsumerUsageError(`Invalid windowing: ${issue?.path.map(String).join('.') ?? ''} ${issue?.message ?? ''}`);
+  }
+  return parsed.data;
 }

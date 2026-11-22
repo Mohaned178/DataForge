@@ -3,6 +3,7 @@ import { parseArgs } from 'node:util';
 import { parseUtcInstant, simTimeToIso } from '@dataforge/core';
 import { UnknownEventError, explainEvent, type DeliveryAttempt, type FaultRecord, type FirstDelivery } from '@dataforge/chaos';
 import { EXIT_FAILED, EXIT_OK, UsageError, formatCount, padRight, type CliIo } from '../cli-io';
+import { describeWindowing, formatDuration, shortIso, windowLabel } from '../windows-output';
 import { readPlanForRun } from '../plan-directory';
 import { readIntactCanonicalLog, readManifest } from '../run-directory';
 import { describeEvent, formatSimTime } from './timeline';
@@ -27,7 +28,7 @@ export function runExplain(args: readonly string[], io: CliIo): number {
 
   let explanation;
   try {
-    explanation = explainEvent(events, attempts, values.event);
+    explanation = explainEvent(events, attempts, values.event, profile.windowing);
   } catch (error) {
     if (error instanceof UnknownEventError) {
       io.err(`${error.message}. Event IDs look like evt_<aggregateId>_<version>, for example evt_ord_000042_2.`);
@@ -44,6 +45,13 @@ export function runExplain(args: readonly string[], io: CliIo): number {
   io.out(`  event time  ${at(event.eventTimeMs)}`);
   io.out(`  details     ${describeEvent(event)}`);
   io.out(`  plan        profile ${summaryFile.profile.name}, chaos seed ${summaryFile.chaosSeed}, planner ${summaryFile.plannerVersion}`);
+  const { window } = explanation;
+  if (window !== undefined && profile.windowing !== undefined) {
+    io.out(
+      `  window      ${windowLabel(epochUnixMs, window.windowStartMs, window.windowEndMs)}, closes at ${shortIso(epochUnixMs, window.windowCloseMs)} ` +
+        `(${describeWindowing(profile.windowing)})`,
+    );
+  }
   io.out('');
   io.out(`Delivery attempts (${explanation.attempts.length}):`);
   io.out(
@@ -66,6 +74,9 @@ export function runExplain(args: readonly string[], io: CliIo): number {
         `${profile.faults.transientFailure.maxRetries} retries (the profile allows loss). The target never receives this event.`,
     );
     io.out(`Aggregate order: not delivered, so it has no place in the delivery order of ${event.aggregateId}.`);
+    if (window !== undefined) {
+      io.out('Window: never arrives, so a windowed pipeline cannot count it.');
+    }
     return EXIT_OK;
   }
 
@@ -76,6 +87,19 @@ export function runExplain(args: readonly string[], io: CliIo): number {
       : `Outcome: delivered ${explanation.deliveries} times with the same eventId (first at position #${first.deliverySequence}). ` +
           'An idempotent target applies it once.',
   );
+  if (window !== undefined) {
+    const stream = window.streamTimeMs === null ? 'it is the first message' : `stream time ${shortIso(epochUnixMs, window.streamTimeMs)}`;
+    if (window.arrival === 'after-close') {
+      io.out(
+        `Window: arrives AFTER its window closed (${stream}, ${formatDuration((window.streamTimeMs ?? 0) - window.windowCloseMs)} past the close). ` +
+          'A pipeline with this allowed lateness drops it.',
+      );
+    } else if (window.arrival === 'within-lateness') {
+      io.out(`Window: arrives after its window ended but before it closed (${stream}), within the allowed lateness: it must still be counted.`);
+    } else {
+      io.out(`Window: arrives on time (${stream}, before the window ends).`);
+    }
+  }
   if (explanation.overtakenBy.length === 0 && explanation.overtook.length === 0) {
     io.out(`Aggregate order: in order within ${event.aggregateId}.`);
     return EXIT_OK;
@@ -117,6 +141,11 @@ function describeFault(fault: FaultRecord, attempt: DeliveryAttempt): string {
       return (
         `reorder: moved behind ${fault.behindEventId} (${fault.distance} later), ` +
         (fault.shiftMs === 0 ? 'already behind it after the delay' : `+${formatCount(fault.shiftMs)} ms`)
+      );
+    case 'late':
+      return (
+        `late: held until after ${fault.behindEventId}, which is past the window close, ` +
+        (fault.shiftMs === 0 ? 'already after it' : `+${formatCount(fault.shiftMs)} ms`)
       );
     case 'transientFailure':
       return `transient failure ${fault.failure} of ${fault.failures}`;

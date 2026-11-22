@@ -20,6 +20,12 @@ export const faultRecordSchema = z.discriminatedUnion('type', [
    * event of the same aggregate. `shiftMs` is how much later that made it (0 when a delay already had).
    */
   z.strictObject({ type: z.literal('reorder'), behindEventId: id, distance: positiveInt, shiftMs: nonNegativeInt }),
+  /**
+   * The original attempt was held back until after its window closed: it is delivered just after
+   * `behindEventId`, an event whose event time is past `windowCloseMs`, so the target's stream time
+   * has passed the close when it arrives. `shiftMs` is how much later that made it.
+   */
+  z.strictObject({ type: z.literal('late'), windowCloseMs: nonNegativeInt, behindEventId: id, shiftMs: nonNegativeInt }),
   /** This attempt is failure `failure` of the `failures` consecutive failures planned for the event. */
   z.strictObject({ type: z.literal('transientFailure'), failure: positiveInt, failures: positiveInt }),
   /** This attempt is extra copy `copy` of `copies`. */

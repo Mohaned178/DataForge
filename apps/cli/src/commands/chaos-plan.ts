@@ -13,6 +13,7 @@ import {
 import { EXIT_OK, EXIT_USAGE, UsageError, formatCount, padRight, readJsonFile, type CliIo } from '../cli-io';
 import { PLAN_FILES, type DeliverySummaryFile } from '../plan-directory';
 import { RUN_FILES, fileEntry, prepareOutputDirectory, readIntactCanonicalLog, readManifest, samePath, writeRunFile } from '../run-directory';
+import { describeWindowing } from '../windows-output';
 import { formatSimTime } from './timeline';
 
 export const CHAOS_PLAN_USAGE =
@@ -111,6 +112,16 @@ function runChaosPlan(args: readonly string[], io: CliIo): number {
       `delivered ${formatCount(summary.attemptsByOutcome.delivered)}, failed ${formatCount(summary.attemptsByOutcome.failed)}`,
   );
   printFaults(summary, io);
+  if (summary.windowing !== undefined) {
+    const { arrivals } = summary.windowing;
+    io.out(`  windowing   ${describeWindowing(summary.windowing)}`);
+    io.out(
+      `  arrivals    ${formatCount(arrivals.onTime + arrivals.withinLateness + arrivals.afterClose + arrivals.lost)} windowed events ` +
+        `(OrderCreated, PaymentCompleted), by stream time: ${formatCount(arrivals.onTime)} on time, ` +
+        `${formatCount(arrivals.withinLateness)} within the allowed lateness, ${formatCount(arrivals.afterClose)} after their window closed, ` +
+        `${formatCount(arrivals.lost)} lost`,
+    );
+  }
   io.out(`  outcome     ${formatCount(summary.eventsDelivered)} of ${formatCount(summary.events)} events delivered, ${formatCount(summary.eventsLost)} lost`);
   io.out(
     `  ordering    ${formatCount(summary.ordering.outOfOrderEvents)} events delivered after a later event of their aggregate ` +
@@ -129,9 +140,10 @@ function runChaosPlan(args: readonly string[], io: CliIo): number {
 }
 
 function printFaults(summary: DeliverySummary, io: CliIo): void {
-  const { delay, reorder, duplicate, transientFailure } = summary.faults;
+  const { delay, late, reorder, duplicate, transientFailure } = summary.faults;
   const rows: [string, typeof delay, string, string][] = [
     ['delay', delay, 'events', ''],
+    ...(late === undefined ? [] : [['late', late, 'eligible', 'arrive after their window closed'] as [string, typeof delay, string, string]]),
     ['reorder', reorder, 'eligible', ''],
     ['duplicate', duplicate, 'delivered', `+${formatCount(duplicate.extraDeliveries)} extra deliveries`],
     ['transientFailure', transientFailure, 'events', `${formatCount(transientFailure.failedAttempts)} failed attempts, ${formatCount(transientFailure.lostEvents)} lost`],

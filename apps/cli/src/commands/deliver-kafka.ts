@@ -73,6 +73,7 @@ export async function deliverThroughKafka(inputs: DeliveryInputs, options: Kafka
       target: inputs.targetName,
       outDirectory,
       logPath: consumerLogPath,
+      windowing: inputs.windowing,
     });
 
     producer = createIdempotentProducer(kafka);
@@ -104,6 +105,7 @@ export async function deliverThroughKafka(inputs: DeliveryInputs, options: Kafka
     if (sha256Hex(actualStateText) !== report.files[CONSUMER_FILES.actualState].sha256) {
       throw new ConsumerProcessError(`${CONSUMER_FILES.actualState} does not match the checksum in ${CONSUMER_FILES.report}.`, consumerLogPath);
     }
+    const actualWindowsText = readConsumerWindows(outDirectory, report, inputs, consumerLogPath);
     const targetRun = buildTargetRun({
       target: report.target,
       manifest: inputs.manifest,
@@ -117,6 +119,7 @@ export async function deliverThroughKafka(inputs: DeliveryInputs, options: Kafka
       counters: report.counters,
       parkedEventIds: report.parkedEventIds,
       actualStateText,
+      ...(inputs.windowing === undefined || actualWindowsText === undefined ? {} : { windows: { windowing: inputs.windowing, actualWindowsText } }),
     });
     writeTargetRun(outDirectory, targetRun);
     const deliveryLogText = serializeDeliveryLog(execution.log);
@@ -179,6 +182,22 @@ export async function deliverThroughKafka(inputs: DeliveryInputs, options: Kafka
     await admin?.disconnect().catch(() => undefined);
     await new Promise<void>((resolve) => producerLog.end(resolve));
   }
+}
+
+/** The consumer's windows, checked against its report, when the plan has a windowing contract. */
+function readConsumerWindows(outDirectory: string, report: ConsumerReport, inputs: DeliveryInputs, logPath: string): string | undefined {
+  const recorded = report.files[CONSUMER_FILES.actualWindows];
+  if (inputs.windowing === undefined) {
+    return undefined;
+  }
+  if (recorded === undefined) {
+    throw new ConsumerProcessError(`The plan has a windowing contract, but the consumer wrote no ${CONSUMER_FILES.actualWindows}.`, logPath);
+  }
+  const text = readFileSync(join(outDirectory, CONSUMER_FILES.actualWindows), 'utf8');
+  if (sha256Hex(text) !== recorded.sha256) {
+    throw new ConsumerProcessError(`${CONSUMER_FILES.actualWindows} does not match the checksum in ${CONSUMER_FILES.report}.`, logPath);
+  }
+  return text;
 }
 
 function readConsumerReport(outDirectory: string): ConsumerReport {

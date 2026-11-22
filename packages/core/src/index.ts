@@ -77,3 +77,29 @@ export { CanonicalLogViolationError, replayCanonicalLog, type ReplayResult, type
 export * from './projection/world-state';
 
 export { simulate, type SimulationInput, type SimulationResult } from './generation/simulate';
+
+export {
+  WINDOWING_LIMITS,
+  WINDOW_METRICS,
+  WINDOW_METRIC_EVENT_TYPE,
+  WindowAccumulator,
+  computeExpectedWindows,
+  windowCloseOf,
+  windowContribution,
+  windowStartOf,
+  windowingSpecSchema,
+  type WindowAggregate,
+  type WindowMetric,
+  type WindowMetrics,
+  type WindowingSpec,
+} from './windows/windowing';
+export {
+  ACTUAL_WINDOWS_FORMAT,
+  ACTUAL_WINDOWS_FORMAT_VERSION,
+  ActualWindowsValidationError,
+  actualWindowsSchema,
+  buildActualWindows,
+  parseActualWindows,
+  serializeActualWindows,
+  type ActualWindows,
+} from './windows/actual-windows';

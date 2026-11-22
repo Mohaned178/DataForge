@@ -1,6 +1,17 @@
-import { INITIAL_ORDER_STATUS, ORDER_TRANSITIONS, WorldState, buildActualState, type CanonicalEvent, type OrderRecord } from '@dataforge/core';
+import {
+  INITIAL_ORDER_STATUS,
+  ORDER_TRANSITIONS,
+  WindowAccumulator,
+  WorldState,
+  buildActualState,
+  buildActualWindows,
+  windowContribution,
+  windowStartOf,
+  type CanonicalEvent,
+  type OrderRecord,
+} from '@dataforge/core';
 import type { DeliveryMessage } from '../message';
-import type { Target, TargetResult } from '../target';
+import type { Target, TargetOptions, TargetResult } from '../target';
 
 /**
  * A pipeline written as if delivery were perfect, the way many first versions are:
@@ -8,21 +19,37 @@ import type { Target, TargetResult } from '../target';
  * - creates are upserts: a redelivered create overwrites the row with its initial values;
  * - the order status is whatever the last message to arrive says (last arrival wins);
  * - counters and amounts are incremented for every message, including redeliveries;
- * - an update of a row that does not exist yet affects nothing and is silently lost.
+ * - an update of a row that does not exist yet affects nothing and is silently lost;
+ * - with a windowing contract, windows are processing-time windows: every message, copies included,
+ *   is counted in the window of the moment it arrives (the delivery clock), not of its event time.
  *
  * With perfect delivery it produces exactly the expected state; every difference it shows under
  * chaos is a real class of pipeline bug.
  */
 export class NaiveTarget implements Target {
   readonly name = 'naive';
-  readonly description = 'applies every message as it arrives: upserts, last arrival wins, not idempotent';
+  readonly description: string;
 
   private readonly state = new WorldState();
   private updatesLost = 0;
+  private readonly windowSizeMs: number | undefined;
+  private readonly windows: WindowAccumulator | undefined;
+
+  constructor(options: TargetOptions = {}) {
+    this.windowSizeMs = options.windowing?.sizeMs;
+    this.windows = options.windowing === undefined ? undefined : new WindowAccumulator(options.windowing.sizeMs);
+    this.description =
+      'applies every message as it arrives: upserts, last arrival wins, not idempotent' +
+      (options.windowing === undefined ? '' : '; processing-time windows, every copy counted where it arrives');
+  }
 
   handle(message: DeliveryMessage): void {
     const { event } = message;
     const { state } = this;
+    const contribution = windowContribution(event);
+    if (this.windows !== undefined && this.windowSizeMs !== undefined && contribution !== undefined) {
+      this.windows.add(windowStartOf(message.headers.scheduledDeliveryTimeMs, this.windowSizeMs), contribution);
+    }
     switch (event.type) {
       case 'ProductCreated': {
         const { productId, sku, name, priceMinor, currency } = event.payload;
@@ -113,7 +140,8 @@ export class NaiveTarget implements Target {
   }
 
   finish(): TargetResult {
-    return { actualState: buildActualState(this.state), counters: { updatesLost: this.updatesLost }, parkedEventIds: [] };
+    const result: TargetResult = { actualState: buildActualState(this.state), counters: { updatesLost: this.updatesLost }, parkedEventIds: [] };
+    return this.windows === undefined ? result : { ...result, windows: buildActualWindows(this.windows.list()) };
   }
 
   /** UPDATE orders SET status = <the event's target status>, ... WHERE orderId = ?: zero rows when the order is not there yet. */

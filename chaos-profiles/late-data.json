@@ -1,0 +1,10 @@
+{
+  "formatVersion": 1,
+  "name": "late-data",
+  "description": "Hourly event-time windows with 10 minutes of allowed lateness. 5% of events arrive after their window has closed (1 to 30 minutes past the close), and 10% are delayed by up to 5 minutes.",
+  "windowing": { "sizeMs": 3600000, "allowedLatenessMs": 600000 },
+  "faults": {
+    "delay": { "rate": 0.1, "delayMs": { "min": 1000, "max": 300000 } },
+    "late": { "rate": 0.05, "lateByMs": { "min": 60000, "max": 1800000 } }
+  }
+}

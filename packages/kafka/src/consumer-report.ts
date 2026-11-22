@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 export const CONSUMER_FILES = {
   actualState: 'actual-state.json',
+  actualWindows: 'actual-windows.json',
   report: 'consumer-report.json',
   processingLog: 'processing-log.jsonl',
 } as const;
@@ -29,7 +30,13 @@ export const consumerReportSchema = z.strictObject({
   kafkaRedeliveries: count,
   counters: z.record(z.string(), count),
   parkedEventIds: z.array(z.string()),
-  files: z.strictObject({ [CONSUMER_FILES.actualState]: fileEntry, [CONSUMER_FILES.processingLog]: fileEntry }),
+  /** Only when the consumer was started with a windowing contract. */
+  windowing: z.strictObject({ sizeMs: count, allowedLatenessMs: count }).optional(),
+  files: z.strictObject({
+    [CONSUMER_FILES.actualState]: fileEntry,
+    [CONSUMER_FILES.actualWindows]: fileEntry.optional(),
+    [CONSUMER_FILES.processingLog]: fileEntry,
+  }),
 });
 
 export type ConsumerReport = z.output<typeof consumerReportSchema>;
