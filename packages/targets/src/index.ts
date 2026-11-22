@@ -1,4 +1,4 @@
-export type { DeliveryHeaders, DeliveryMessage } from './message';
+export { deliveryMessageFor, type DeliveryHeaders, type DeliveryMessage } from './message';
 export type { Target, TargetResult } from './target';
 export { CorrectTarget } from './reference/correct';
 export { NaiveTarget } from './reference/naive';

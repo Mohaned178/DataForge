@@ -38,9 +38,15 @@ importers:
       '@dataforge/chaos':
         specifier: workspace:*
         version: link:../../packages/chaos
+      '@dataforge/consumer':
+        specifier: workspace:*
+        version: link:../consumer
       '@dataforge/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@dataforge/kafka':
+        specifier: workspace:*
+        version: link:../../packages/kafka
       '@dataforge/targets':
         specifier: workspace:*
         version: link:../../packages/targets
@@ -50,6 +56,18 @@ importers:
       zod:
         specifier: 4.6.7
         version: 4.6.7
+
+  apps/consumer:
+    dependencies:
+      '@dataforge/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@dataforge/kafka':
+        specifier: workspace:*
+        version: link:../../packages/kafka
+      '@dataforge/targets':
+        specifier: workspace:*
+        version: link:../../packages/targets
 
   packages/chaos:
     dependencies:
@@ -62,6 +80,24 @@ importers:
 
   packages/core:
     dependencies:
+      zod:
+        specifier: 4.6.7
+        version: 4.6.7
+
+  packages/kafka:
+    dependencies:
+      '@dataforge/chaos':
+        specifier: workspace:*
+        version: link:../chaos
+      '@dataforge/core':
+        specifier: workspace:*
+        version: link:../core
+      '@dataforge/targets':
+        specifier: workspace:*
+        version: link:../targets
+      kafkajs:
+        specifier: 2.2.4
+        version: 2.2.4
       zod:
         specifier: 4.6.7
         version: 4.6.7
@@ -1360,6 +1396,10 @@ packages:
     resolution: {integrity: sha512-XmOWe7eyHYH14cLdVPoyg+GOH3rYX++KpzrylJwSW98t3Nk+U8XOl8FWKOgwtzdb8lXGf6zYwDUzeHMWfxasyg==}
     engines: {node: '>=6'}
     hasBin: true
+
+  kafkajs@2.2.4:
+    resolution: {integrity: sha512-j/YeapB1vfPT2iOIUn/vxdyKEuhuY2PxMBvf5JWux6iSaukAccrMtXEY/Lb7OvavDhOWME589bpLrEdnVHjfjA==}
+    engines: {node: '>=14.0.0'}
 
   keyv@5.6.0:
     resolution: {integrity: sha512-CYDD3SOtsHtyXeEORYRx2qBtpDJFjRTGXUtmNEMGyzYOKj1TE3tycdlho7kA1Ufx9OYWZzg52QFBGALTirzDSw==}
@@ -3334,6 +3374,8 @@ snapshots:
   json-stable-stringify-without-jsonify@1.0.1: {}
 
   json5@2.2.3: {}
+
+  kafkajs@2.2.4: {}
 
   keyv@5.6.0:
     dependencies:

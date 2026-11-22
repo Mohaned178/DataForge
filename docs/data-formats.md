@@ -262,7 +262,7 @@ byte order mark is accepted.
 
 `dataforge deliver` writes it sorted by ID in canonical JSON, like `expected-state.json`.
 
-## Delivery directory (`dataforge deliver --out <dir>`)
+## Delivery directory (`dataforge deliver --out <dir>`, either transport)
 
 | File | Content |
 | --- | --- |
@@ -287,6 +287,106 @@ byte order mark is accepted.
 `validate` uses it when it sits next to an `actual-state.json`: it refuses an actual state delivered
 from another run, refuses `--plan` when it is not the plan the target consumed, and reports
 (without refusing) an actual state edited since it was written.
+
+## Kafka delivery directory (`dataforge deliver --transport kafka --out <dir>`)
+
+The same `actual-state.json` and `target-run.json` as the in-memory transport (with one partition,
+byte-identical to it for the same run, plan and target), plus what really happened on Kafka. The
+files below hold wall-clock times, so they differ from one execution to the next.
+
+| File | Written by | Content |
+| --- | --- | --- |
+| `actual-state.json` | consumer process | The target's final state (actual-state format). |
+| `target-run.json` | delivering process | Same format and meaning as above, built from the consumer's report. |
+| `delivery-log.jsonl` | delivering process | One entry per planned attempt, in delivery order: sent (partition, offset, times) or planned failure. |
+| `processing-log.jsonl` | consumer process | One entry per record the consumer handled, in the order it handled them. |
+| `consumer-report.json` | consumer process | What the consumer saw: target, topic, group, partitions, message counts, target counters. |
+| `kafka-run.json` | delivering process | The execution: broker, topic, group, consumer process, pacing, completion, checksums. |
+| `producer.log`, `consumer.log` | both | The Kafka client log of each process (JSON lines), and the consumer's console output. |
+
+### Kafka record (`dataforge.delivery-record`, format version 1)
+
+One record per delivered attempt, in delivery order, on topic `dataforge.<execution id>`. A planned
+failure is never sent.
+
+| Part | Content |
+| --- | --- |
+| key | The event's `aggregateId` (UTF-8). Every event of an aggregate is in one partition, in plan order. |
+| value | Canonical JSON: `{"event":{...canonical event...},"eventTime":"2026-01-01T00:00:00.000Z","format":"dataforge.delivery-record","formatVersion":1}`. `eventTime` is the event time as an ISO-8601 UTC instant. |
+| headers | `attemptId`, `attemptNumber`, `deliverySequence`, `scheduledDeliveryTimeMs` (decimal strings) and `scheduledDeliveryTime` (ISO-8601). |
+| timestamp | Kafka's own `CreateTime`: when the producer sent the record (wall clock). |
+
+Redeliveries of one event (duplicates, a retry after a failed attempt) have the same key and value
+and different headers. The reference consumer rejects a record with a missing or extra field, a
+malformed header, or a key other than the event's `aggregateId`, and stops with the path of each
+problem.
+
+### Delivery log entry (`delivery-log.jsonl`)
+
+```json
+{"ackedAtMs":132,"aggregateId":"prd_000002","attemptId":"att_prd_000002_1_1","deliverySequence":2,"driftMs":null,
+ "dueAtMs":null,"eventId":"evt_prd_000002_1","offset":"1","outcome":"sent","partition":0,
+ "scheduledDeliveryTimeMs":0,"startedAtMs":127}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `outcome` | `sent` (produced and acknowledged) or `planned-failure` (never sent). |
+| `dueAtMs` | When the attempt was due, in wall-clock ms since the execution started: `(scheduledDeliveryTimeMs - first attempt's) / speed`. `null` at `--speed max`. |
+| `startedAtMs`, `ackedAtMs` | When sending started and when the broker acknowledged it (ms since the start). `ackedAtMs` is `null` for a planned failure. |
+| `driftMs` | `startedAtMs - dueAtMs`: how late the attempt was. `null` at `--speed max`. |
+| `partition`, `offset` | Where the broker stored the record (`offset` is a decimal string: Kafka offsets are 64-bit). `null` for a planned failure. |
+
+### Processing log entry (`processing-log.jsonl`)
+
+```json
+{"aggregateId":"prd_000002","attemptId":"att_prd_000002_1_1","deliverySequence":2,"eventId":"evt_prd_000002_1",
+ "kafkaTimestamp":"2026-11-22T17:37:02.151Z","offset":"1","partition":0,"processedAt":"2026-11-22T17:37:02.537Z",
+ "processingSequence":2}
+```
+
+`processedAt` is processing time (spec 4.4): when the consumer handed the record to its target.
+With one partition, `processingSequence` follows `deliverySequence` of the sent attempts exactly;
+with several, only within each partition.
+
+### Consumer report (`consumer-report.json`)
+
+```jsonc
+{
+  "format": "dataforge.consumer-report",
+  "formatVersion": 1,
+  "target": { "name": "naive", "description": "applies every message as it arrives: ..." },
+  "kafka": { "topic": "dataforge.20261122T173656506Z-b6ed1f", "groupId": "dataforge-consumer.20261122T173656506Z-b6ed1f", "partitions": [0] },
+  "startedAt": "2026-11-22T17:36:56.965Z", "finishedAt": "2026-11-22T17:37:08.021Z",
+  "messages": 486, "distinctEvents": 472, "redeliveries": 14,
+  "kafkaRedeliveries": 0,          // records Kafka handed over twice (same partition and offset)
+  "counters": { "updatesLost": 6 }, "parkedEventIds": [],
+  "files": { "actual-state.json": { "sha256": "a47f...", "bytes": 135126 }, "processing-log.jsonl": { ... } }
+}
+```
+
+The consumer knows nothing of runs or plans; the delivering process checks the actual state's
+checksum against this report and binds both to the run and plan in `target-run.json`.
+
+### Kafka run (`kafka-run.json`)
+
+```jsonc
+{
+  "format": "dataforge.kafka-run",
+  "formatVersion": 1,
+  "executionId": "20261122T173656506Z-b6ed1f",
+  "client": "kafkajs 2.2.4",
+  "kafka": { "brokers": ["localhost:9092"], "clusterId": "5L6g...", "topic": "dataforge.2026...", "partitions": 1,
+             "groupId": "dataforge-consumer.2026..." },
+  "consumer": { "pid": 19688, "target": "naive", "joinedAfterMs": 5003, "assignedPartitions": [0],
+                "startedAt": "...", "finishedAt": "...", "exitCode": 0 },
+  "execution": { "speed": "max", "startedAt": "...", "durationMs": 980, "sent": 486, "plannedFailures": 0,
+                 "maxDriftMs": null },          // speed: "max" or the factor, for example 40000
+  "completion": { "lagZeroAfterMs": 16, "polls": 1 },   // after the last record was sent
+  "consumed": { "messages": 486, "kafkaRedeliveries": 0 },
+  "files": { "delivery-log.jsonl": { "sha256": "...", "bytes": 125837 } }
+}
+```
 
 ## Validation report (`dataforge validate --report <file>`)
 

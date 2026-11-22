@@ -21,6 +21,9 @@ function run(...argv: string[]): Captured {
   const err: string[] = [];
   const io: CliIo = { out: (line = '') => out.push(line), err: (line = '') => err.push(line) };
   const code = runCli(argv, io);
+  if (typeof code !== 'number') {
+    throw new Error('expected a synchronous command');
+  }
   return { code, out: out.join('\n'), err: err.join('\n') };
 }
 

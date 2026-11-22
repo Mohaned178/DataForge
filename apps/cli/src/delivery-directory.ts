@@ -1,7 +1,8 @@
 import { existsSync } from 'node:fs';
 import { z } from 'zod';
 import { UsageError } from './cli-io';
-import { fileEntrySchema, readRunFile } from './run-directory';
+import { PLAN_FILES, type DeliverySummaryFile } from './plan-directory';
+import { fileEntry, fileEntrySchema, readRunFile, type RunManifest } from './run-directory';
 
 export const DELIVERY_FILES = {
   actualState: 'actual-state.json',
@@ -52,4 +53,38 @@ export function readTargetRun(directory: string): TargetRunFile | undefined {
     throw new UsageError(`${DELIVERY_FILES.targetRun} in ${directory} is invalid: ${issue?.path.map(String).join('.') ?? ''} ${issue?.message ?? ''}`);
   }
   return parsed.data;
+}
+
+export interface TargetRunInput {
+  readonly target: { readonly name: string; readonly description: string };
+  readonly manifest: RunManifest;
+  readonly summaryFile: DeliverySummaryFile;
+  readonly delivery: TargetRunFile['delivery'];
+  readonly counters: Readonly<Record<string, number>>;
+  readonly parkedEventIds: readonly string[];
+  readonly actualStateText: string;
+}
+
+/**
+ * target-run.json for a delivery, whatever the transport. It holds nothing about how the messages
+ * travelled, so the same run, plan and target give the same file in process and through Kafka.
+ */
+export function buildTargetRun(input: TargetRunInput): TargetRunFile {
+  const { manifest, summaryFile } = input;
+  return {
+    format: 'dataforge.target-run',
+    formatVersion: 1,
+    target: { name: input.target.name, description: input.target.description },
+    source: { seed: manifest.seed, scenarioName: manifest.scenario.name, eventsSha256: summaryFile.source.eventsSha256 },
+    plan: {
+      plannerVersion: summaryFile.plannerVersion,
+      chaosSeed: summaryFile.chaosSeed,
+      profile: summaryFile.profile,
+      planSha256: summaryFile.files[PLAN_FILES.plan].sha256,
+    },
+    delivery: { ...input.delivery },
+    counters: { ...input.counters },
+    parkedEventIds: [...input.parkedEventIds],
+    files: { [DELIVERY_FILES.actualState]: fileEntry(input.actualStateText) },
+  };
 }

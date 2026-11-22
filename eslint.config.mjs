@@ -63,13 +63,29 @@ export default defineConfig(
     extends: [tseslint.configs.disableTypeChecked],
   },
   {
+    // Plain JavaScript files are CommonJS configuration and setup files run by Node.
     files: ['**/*.js'],
-    languageOptions: { sourceType: 'commonjs' },
+    languageOptions: {
+      sourceType: 'commonjs',
+      globals: { require: 'readonly', module: 'writable', process: 'readonly', __dirname: 'readonly' },
+    },
+    rules: { '@typescript-eslint/no-require-imports': 'off' },
   },
   {
     // The chaos planner, validator and reference targets must be as deterministic as the simulation:
     // same inputs, same plan, same actual state, same report.
     files: ['packages/core/src/**/*.ts', 'packages/chaos/src/**/*.ts', 'packages/validation/src/**/*.ts', 'packages/targets/src/**/*.ts'],
+    rules: {
+      'no-restricted-properties': ['error', ...nondeterministicProperties],
+      'no-restricted-syntax': ['error', ...nondeterministicSyntax],
+      'no-restricted-imports': ['error', coreForbiddenImports],
+    },
+  },
+  {
+    // @dataforge/kafka is held to the same rules, except the two modules that talk to the broker. A new
+    // file is guarded by default; the executor reads time only from the clock it is given.
+    files: ['packages/kafka/src/**/*.ts'],
+    ignores: ['packages/kafka/src/client.ts', 'packages/kafka/src/consumer-runner.ts'],
     rules: {
       'no-restricted-properties': ['error', ...nondeterministicProperties],
       'no-restricted-syntax': ['error', ...nondeterministicSyntax],

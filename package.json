@@ -13,6 +13,7 @@
     "lint": "eslint .",
     "test": "jest",
     "check": "pnpm typecheck && pnpm lint && pnpm test",
+    "test:integration": "pnpm build && jest --config jest.integration.config.js --runInBand",
     "clean": "pnpm -r clean",
     "dataforge": "node apps/cli/dist/main.js"
   },

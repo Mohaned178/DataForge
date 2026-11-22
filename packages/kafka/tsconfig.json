@@ -1,0 +1,13 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["node", "jest"],
+    "noEmit": true,
+    "paths": {
+      "@dataforge/core": ["../../packages/core/src/index.ts"],
+      "@dataforge/chaos": ["../../packages/chaos/src/index.ts"],
+      "@dataforge/targets": ["../../packages/targets/src/index.ts"]
+    }
+  },
+  "include": ["src", "test", "integration"]
+}

@@ -1,4 +1,5 @@
 import type { CanonicalEvent } from '@dataforge/core';
+import type { DeliveryAttempt } from '@dataforge/chaos';
 
 /** Delivery metadata the transport attaches to a message. It describes the attempt, never the business event. */
 export interface DeliveryHeaders {
@@ -17,4 +18,18 @@ export interface DeliveryMessage {
   readonly key: string;
   readonly event: CanonicalEvent;
   readonly headers: DeliveryHeaders;
+}
+
+/** The message a delivered attempt becomes, whatever the transport (in process or Kafka). */
+export function deliveryMessageFor(event: CanonicalEvent, attempt: DeliveryAttempt): DeliveryMessage {
+  return {
+    key: event.aggregateId,
+    event,
+    headers: {
+      attemptId: attempt.attemptId,
+      attemptNumber: attempt.attemptNumber,
+      deliverySequence: attempt.deliverySequence,
+      scheduledDeliveryTimeMs: attempt.scheduledDeliveryTimeMs,
+    },
+  };
 }

@@ -2,7 +2,8 @@
 
 DataForge is a **modular monolith** in a pnpm workspace. The simulation engine is a plain
 TypeScript library with no framework or infrastructure dependencies; everything that does I/O lives
-in `apps/*` and depends on the engine, never the other way around.
+in `apps/*`, or in `packages/kafka`, the one infrastructure adapter, and depends on the engine, never
+the other way around.
 
 ## Modules
 
@@ -12,13 +13,16 @@ packages/
   chaos/         @dataforge/chaos        Chaos delivery planner (Milestone 2)
   validation/    @dataforge/validation   Expected-vs-actual comparison, invariants, root-cause hints (Milestone 3)
   targets/       @dataforge/targets      Reference target pipelines + in-memory transport (Milestone 3)
+  kafka/         @dataforge/kafka        Kafka delivery: record contract, plan executor, lag, consumer runner (Milestone 4)
 apps/
   cli/           @dataforge/cli          Command-line interface (Milestone 1)
-  api/           @dataforge/api          NestJS + Prisma + Kafka delivery (Milestones 4, 6, 7, planned)
+  consumer/      @dataforge/consumer     The reference consumer as a standalone process (Milestone 4)
+  api/           @dataforge/api          NestJS + Prisma (Milestones 6, 7, planned)
   web/           @dataforge/web          React + Vite (Milestones 8-9, planned)
 scenarios/                               Example scenario definitions
 chaos-profiles/                          Example chaos profiles
 scripts/verification/                    Per-milestone self-checks of the manual verification
+compose.yaml                             Local infrastructure: one Kafka broker in KRaft mode
 docs/                                    Specification, architecture, roadmap, formats, ADRs
 ```
 
@@ -26,7 +30,9 @@ Dependency direction (enforced by package dependencies, plus ESLint for the four
 
 ```text
 apps/web            ──HTTP──▶ apps/api (planned)
-apps/cli            ──▶ validation, targets, chaos, core
+apps/cli            ──▶ kafka, validation, targets, chaos, core   (starts apps/consumer as a child process)
+apps/consumer       ──▶ kafka, targets, core
+packages/kafka      ──▶ targets, chaos, core, kafkajs
 packages/validation ──▶ chaos (delivery attempts), core
 packages/targets    ──▶ chaos (delivery attempts), core
 packages/chaos      ──▶ core
@@ -41,6 +47,9 @@ dependency.)
 `packages/core`, `packages/chaos`, `packages/validation` and `packages/targets` may not import file
 system, network, process, NestJS, Prisma, Kafka or React modules, and may not call `Math.random`,
 `Date.now`, `new Date()`, `localeCompare` or `toLocaleString`. `pnpm lint` fails if they do.
+`packages/kafka` is the one package allowed to import a Kafka client (only `client.ts` and
+`consumer-runner.ts` do); its record contract, executor, lag arithmetic, log formats and process
+protocol are held to the same rules, and the executor reads time only from an injected clock.
 
 ## Inside `@dataforge/core`
 
@@ -77,8 +86,21 @@ Kafka.
 | `targets/src/reference/correct.ts` | Idempotent, version-ordered, dependency-aware consumer built on the core projection. |
 | `targets/src/reference/naive.ts` | A consumer that assumes perfect delivery: upserts, last arrival wins, counts every copy. |
 
-A target implements `Target` (`handle(message)`, `finish()`). A `DeliveryMessage` is the record
-Kafka will carry in Milestone 4: key `aggregateId`, the canonical event, attempt headers.
+A target implements `Target` (`handle(message)`, `finish()`). A `DeliveryMessage` is what a target
+receives from any transport: key `aggregateId`, the canonical event, attempt headers.
+
+## Inside `@dataforge/kafka` and `@dataforge/consumer`
+
+| Module | Responsibility |
+| --- | --- |
+| `kafka/src/record.ts` | The Kafka record contract: `encodeDeliveryRecord` (message to key, value, headers) and the Zod-validated `decodeDeliveryRecord`. |
+| `kafka/src/executor.ts` | `executePlan`: plays a plan in delivery order through a `RecordSender`, paced by an injected `WallClock`; planned failures are logged, never sent. |
+| `kafka/src/lag.ts` | Consumer-group lag from end and committed offsets. |
+| `kafka/src/client.ts` | KafkaJS adapters: client with file logging, admin connect (Kafka unavailable), topic creation, lag polling, the idempotent producer and `KafkaRecordSender`. |
+| `kafka/src/consumer-runner.ts` | `ConsumerRunner`: joins a group, decodes records, hands them to a `Target`, commits after each handled batch, keeps the processing log. |
+| `kafka/src/process-protocol.ts` | The IPC messages between the delivering process and the consumer process. |
+| `consumer/src/main.ts` | The consumer process: options, `ConsumerRunner` with a reference target, finish on IPC or Ctrl+C, output files. |
+| `cli/src/commands/deliver-kafka.ts` | Topic and group per execution, consumer process, executor, zero lag, finish, output files. |
 
 ## Data flow (Milestone 1)
 
@@ -153,6 +175,32 @@ plan (delivery-plan.jsonl) ──┤                                            
      console summary + validation-report.json   (exit 0 PASS, 1 findings)
 ```
 
+## Data flow (Milestone 4)
+
+```text
+dataforge deliver --transport kafka                        dataforge-consumer (child process)
+  run + plan (intact, bound by hash)
+  connect admin ── Kafka unreachable? exit 3
+  create topic dataforge.<execution id> (1 partition)
+  fork consumer ──────────────────────────────────────────▶ join group dataforge-consumer.<id>
+                ◀───────────────────────────── IPC "ready"   (read from the beginning)
+  executePlan: each attempt in delivery order
+    planned failure ─▶ delivery-log only
+    delivered ─▶ produce {key, value, headers}, acked ──▶ Kafka ──▶ fetch batch
+                 delivery-log: partition, offset, times              decode ─▶ target.handle()
+                                                                     processing-log
+                                                                     commit offsets of the batch
+  poll lag (end - committed) until 0
+  IPC "finish" ───────────────────────────────────────────▶ target.finish()
+                                                             actual-state.json, consumer-report.json,
+                ◀──────────────────────────── IPC "finished"  processing-log.jsonl; exit 0
+  target-run.json (same as in memory), delivery-log.jsonl, kafka-run.json
+```
+
+With one partition the consumer sees exactly the planned order, so `actual-state.json` and
+`target-run.json` are byte-identical to `--transport memory`; `dataforge validate` reads them the
+same way.
+
 ## Key concepts
 
 - **Canonical event**: a business fact in the simulated world, identified by `eventId`, positioned
@@ -164,7 +212,7 @@ plan (delivery-plan.jsonl) ──┤                                            
 - **Event time / delivery time / processing time**: event time is when the business fact happened
   (`eventTimeMs`, milliseconds since the scenario epoch). Delivery time is when an attempt is
   scheduled to reach the target (`scheduledDeliveryTimeMs`, same clock, never earlier). Processing time is when the target handled it
-  (Milestone 4). All three are distinct fields; machine time is never used for event time.
+  (`processedAt` in the consumer's processing log, wall clock, from Milestone 4). All three are distinct fields; machine time is never used for event time.
 - **Business event vs delivery attempt**: one canonical event can have several delivery attempts
   (duplicates, retries). Attempts reference the event's `eventId`, have their own `attemptId`, and
   never alter the event.

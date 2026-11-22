@@ -11,7 +11,7 @@ whenever implementation changes the plan. The workflow is driven by the `/datafo
 | 1 | Deterministic simulation core + CLI | **Approved 2026-11-22** |
 | 2 | Chaos delivery planner | **Approved 2026-11-22** |
 | 3 | Validation engine + reference targets (offline end-to-end) | **Approved 2026-11-22** |
-| 4 | Kafka delivery + out-of-process target | Planned |
+| 4 | Kafka delivery + out-of-process target | **Approved 2026-11-22** |
 | 5 | Event-time windows and late data | Planned |
 | 6 | Persistence (PostgreSQL + Prisma) + API foundation (NestJS) | Planned |
 | 7 | Test executions through the API | Planned |
@@ -316,18 +316,149 @@ passing in PowerShell 7.6 and 12 of 12 in Windows PowerShell 5.1 (`-SkipInstall`
 
 ## Milestone 4: Kafka delivery + out-of-process target
 
-**Objective.** Run the same test through a real Kafka broker and a separately running consumer.
+**Objective.** Run the same test through a real Kafka broker and a separately running consumer
+process, and prove that it is the same test: for the same run, plan and target, the consumer ends in
+the same state, with the same findings, as the offline delivery of Milestone 3.
 
-**Included.** Docker Compose with Kafka in KRaft mode (pinned image); Kafka client spike and decision
-(see risks); a delivery executor that plays the plan in wall-clock time with a time-compression
-factor; message contract (key = `aggregateId`, value = event + ISO timestamps, headers = delivery
-attempt metadata); delivery log of real outcomes (partition, offset, time); completion detection by
-consumer-group lag reaching zero; the reference consumer as a standalone process; `dataforge run`.
+**Included.**
 
-**Automated tests.** Integration tests against the real broker (separate `pnpm test:integration`,
-which reports clearly when Kafka is unavailable); per-key ordering preserved for unfaulted events;
-duplicates arrive with the same `eventId` and distinct attempt headers; **equivalence**: the Kafka run
-produces the same findings as the offline run for the same seeds.
+- **Local infrastructure.** `compose.yaml` with one Kafka broker in KRaft mode (pinned image
+  `apache/kafka:4.3.2`, no ZooKeeper, a health check, no volume, so `docker compose down` resets it).
+  Configuration through environment variables (`KAFKA_BROKERS`, `KAFKA_HOST_PORT`), documented in
+  `.env.example`; the CLI reads an optional `.env`.
+- **`@dataforge/kafka`** (new; the event delivery layer of spec section 6, and the only package that
+  imports a Kafka client):
+  - the **Kafka record contract**: key = `aggregateId`; value = canonical JSON
+    `{format, formatVersion, event, eventTime}` (the canonical event plus its ISO-8601 event time);
+    headers = the attempt metadata (`attemptId`, `attemptNumber`, `deliverySequence`,
+    `scheduledDeliveryTimeMs`, `scheduledDeliveryTime`). Encoding and Zod-validated decoding are pure
+    functions; a consumer turns a record back into exactly the `DeliveryMessage` of Milestone 3.
+  - the **plan executor**: plays a delivery plan in delivery order, in wall-clock time compressed by
+    `--speed <factor>` (simulation ms per wall ms) or as fast as possible (`--speed max`). A delivered
+    attempt is produced to Kafka and acknowledged by the broker before the next one; a planned failure
+    is not sent and is recorded as such. Clock and sender are injected, so pacing is unit-tested
+    without a broker.
+  - the **delivery log** of real outcomes: per attempt, sent or planned failure, partition, offset,
+    planned and actual send time (wall clock), drift.
+  - **completion detection**: the consumer group's lag (log end offsets minus committed offsets,
+    summed over partitions) reaching zero after the last send, with a timeout.
+  - the **consumer runner**: joins a consumer group, decodes each record, hands it to a `Target`,
+    records a processing log (partition, offset, Kafka timestamp, processing time), and commits after
+    every batch, so a committed offset always means "handled".
+- **`@dataforge/consumer`** (new app): the reference consumer as a standalone process
+  (`dataforge-consumer --brokers --topic --group --target correct|naive --out`). It knows nothing of
+  runs or plans: it reads Kafka records and writes `actual-state.json`, `consumer-report.json` and
+  `processing-log.jsonl`. It finishes when its parent asks (IPC) or on Ctrl+C.
+- **CLI.** `dataforge deliver --transport kafka` (default `memory`, the Milestone 3 behaviour), with
+  `--brokers`, `--speed`, `--partitions`, `--timeout`. It creates a fresh topic and consumer group per
+  execution, starts the consumer process, waits until the consumer has joined, executes the plan,
+  waits for zero lag, asks the consumer to finish, and writes the same `actual-state.json` and
+  `target-run.json` as the in-memory transport, plus `delivery-log.jsonl`, `kafka-run.json` and the
+  two processes' logs. Kafka or consumer unavailable: exit code 3 with what to start.
+- `pnpm test:integration`: a separate Jest project against the real broker, which fails with a clear
+  message (and the command to start Kafka) when Kafka is unreachable. CI gains a job that starts the
+  Compose broker and runs it.
+
+**Architectural decisions** (ADR-0009).
+
+| Question | Options | Choice |
+| --- | --- | --- |
+| Kafka client | KafkaJS 2.2.4 (spec); `@confluentinc/kafka-javascript` 1.11; `@platformatic/kafka` 2.17 | **KafkaJS**, behind `@dataforge/kafka`. Spike on 2026-11-22 against `apache/kafka:4.3.2`, 5,000 keyed messages each: all three kept per-key order and headers and reached zero lag. KafkaJS: pure JavaScript, about 6 s, only a Node 24 timer warning and self-retried coordinator errors. Confluent: native binding (75 MB, install script to allow), 78 s with one awaited send at a time, part of the KafkaJS API unimplemented. Platformatic: fast, but documents Kafka up to 4.2 only. KafkaJS is unmaintained since 2023, so all client code stays in one package; Confluent's KafkaJS-compatible API is the fallback. |
+| Where Kafka code lives | in `apps/cli`; in `apps/api` (planned NestJS app); its own package | **Its own package**, `@dataforge/kafka`. Both the CLI now and the API in Milestone 7 drive deliveries, and a client swap touches one package. The four pure packages keep rejecting `kafkajs` imports. |
+| Command | a new `dataforge run`; `deliver --transport kafka` | **`deliver --transport kafka`.** Same inputs and the same output files as the in-memory transport, so equivalence is a file comparison; `run --run <dir>` would also clash with the simulation run directory. |
+| Partitions | many by default; one by default | **One by default** (`--partitions` to change). Kafka orders only within a partition. With one, the consumer sees exactly the planned delivery order, so the Kafka run equals the offline run byte for byte. With several, per-key order still holds and the correct target must still pass, but events of different aggregates interleave by fetch timing, which the plan does not describe. |
+| Planned failures | send and drop; do not send | **Not sent**, logged as `planned-failure`. A failed attempt is one that never reaches the target; pretending a broker error would be a fake. |
+| Pacing | fixed rate; plan time compressed by a factor | **Compressed plan time** relative to the first attempt, `--speed max` by default (order is what Milestone 4 needs; pacing matters for windows in Milestone 5). Drift is recorded, not hidden. |
+| Completion | end-of-stream marker; consumer counts messages; consumer-group lag | **Lag reaches zero.** It works for any consumer group without its cooperation, which is what a user's own pipeline needs later. Then the parent asks the consumer to finish. |
+| Offsets | auto-commit on an interval; commit after every batch | **After every batch**, after the target has handled it, so zero lag means every message was handled. A redelivery by Kafka itself (at-least-once after a rebalance) is counted and reported. |
+| Topics | one shared topic; a topic per execution | **A topic and a group per execution** (`dataforge.<execution id>`), so every execution starts empty. Topics are kept for inspection; `docker compose down` removes them. |
+
+**Dependencies.** `@dataforge/core` (`CanonicalEvent`, `canonicalEventSchema`, `canonicalJson`,
+`parseUtcInstant`, `simTimeToIso`). `@dataforge/chaos` (`DeliveryAttempt`). `@dataforge/targets`
+(`Target`, `DeliveryMessage`, `createReferenceTarget`). CLI: run and plan directories,
+`target-run.json` (shared with the in-memory path). New dependency: `kafkajs` 2.2.4 (the Kafka
+client). Docker Desktop for the broker.
+
+**Code and documentation changes.** New `packages/kafka` and `apps/consumer`; `deliver --transport`
+with a shared target-run builder; asynchronous command support in the CLI dispatcher; exit code 3;
+`compose.yaml`, `.env.example`, `jest.integration.config.js`, `test:integration`; ESLint determinism
+guard on the pure parts of `@dataforge/kafka` (record contract, executor); CI integration job;
+ADR-0009; `data-formats.md` (Kafka record, delivery log, processing log, consumer report, Kafka run);
+`ARCHITECTURE.md`; README; manual verification guide and self-check.
+
+**Automated tests.**
+
+- Unit (`pnpm test`, no broker): record encode/decode round trip, header and value validation with
+  paths, key must equal `aggregateId`; executor pacing with a fake clock (due times at a speed,
+  `max`, drift), planned failures never sent, order preserved, sender errors surfaced; lag
+  arithmetic; `deliver` option validation (transport, speed, partitions, Kafka options without
+  `--transport kafka`).
+- Integration (`pnpm test:integration`, real broker): records round-trip through Kafka with key and
+  headers; duplicates arrive with the same `eventId` and distinct `attemptId` headers; per-key
+  order equals the plan's per-aggregate order with three partitions, so unfaulted events arrive in
+  version order; zero lag only after every message was handled; **equivalence**: for two seeds and
+  the profiles `none`, `spec-example`, `flaky-network` and `lossy`, the Kafka delivery (separate
+  consumer process) writes `actual-state.json` and `target-run.json` byte-identical to the in-memory
+  delivery, for both targets, so `validate` gives the same findings; the correct target passes with
+  three partitions; an unreachable broker gives exit code 3.
+
+**Acceptance criteria.**
+
+- `docker compose up -d --wait` starts a healthy single-node KRaft broker from a pinned image.
+- `deliver --transport kafka` sends every delivered attempt as one Kafka record (key `aggregateId`,
+  event and ISO event time in the value, attempt metadata in the headers) and never sends a planned
+  failure; the delivery log records partition, offset and send times for every attempt.
+- The consumer runs as its own process, knows only Kafka and its target, and writes an actual state
+  in the Milestone 3 format.
+- Completion is detected by zero consumer-group lag; the command fails with exit code 3, not a hang,
+  when Kafka is unreachable, the consumer fails, or lag does not reach zero within the timeout.
+- With one partition, the Kafka delivery produces byte-identical `actual-state.json` and
+  `target-run.json` to the in-memory delivery for the same run, plan and target, so `validate` gives
+  the same verdict and findings.
+- Duplicates reach the consumer with the same `eventId` and distinct `attemptId` headers; per-key
+  order is preserved with several partitions, and the correct target still passes.
+- With `--speed <factor>`, attempts are sent at their compressed plan times, and the drift is
+  reported.
+- `pnpm check` needs no broker; `pnpm test:integration` reports clearly when Kafka is unavailable.
+
+**Manual verification.** `docs/manual-verification/milestone-4.md` (MV-4.1 to MV-4.13: install and
+checks; start Kafka and run the integration suite; zero faults through Kafka; equivalence with the
+offline delivery under the spec's example; the real records on Kafka (key, headers, value, a
+duplicate); the delivery log and planned failures; paced delivery; three partitions; loss through
+Kafka; the spec's example size through Kafka; Kafka unavailable; invalid options; the Kafka client
+kept out of the pure packages). Self-check: `scripts/verification/milestone-4.ps1`, 13 of 13 cases passing in PowerShell 7.6 and 12 of 12 in
+Windows PowerShell 5.1 (`-SkipInstall`) on 2026-11-22, with Docker Desktop and the Compose broker.
+
+**Implementation notes** (changes to the plan above, with the reason).
+
+- The command is `deliver --transport kafka`, not the planned `dataforge run` (ADR-0009, decision 8).
+- The roadmap's "value = event + ISO timestamps" became the event plus its ISO event time in the
+  value, and the scheduled delivery time (also as ISO) in the headers: it describes the attempt, not
+  the event.
+- The CLI dispatcher now accepts asynchronous commands; the in-memory path stays synchronous, and
+  `target-run.json` is built by one shared function for both transports
+  (`buildTargetRun`), which also keeps them byte-identical. `DeliveryMessage` construction moved to
+  `deliveryMessageFor` in `@dataforge/targets`, shared by the in-memory transport and the executor.
+- The consumer's fetch wait is 200 ms instead of KafkaJS's 5 s, because leaving the group waited for
+  the long poll (5.8 s per delivery before, about 0.1 s after).
+- The very first delivery on a fresh broker takes about 5 s longer: the broker creates its internal
+  offsets topic for the first consumer group. Later deliveries join in about 0.3 s.
+- `.env` is loaded by the CLI entry point when it exists (Node's `--env-file-if-exists` printed a
+  notice on every command when it did not).
+- The ESLint determinism guard covers all of `@dataforge/kafka` except `client.ts` and
+  `consumer-runner.ts`, so a new file there is guarded by default.
+
+**Product-owner decisions** (2026-11-22, the recommendations accepted):
+
+- D-4.1: one partition stays the default, so a Kafka delivery equals the plan and the offline run
+  byte for byte; `--partitions <n>` remains for realism (ADR-0009, decision 4).
+- D-4.2: delivery topics are kept for inspection; `docker compose down` removes them (ADR-0009,
+  decision 7).
+- D-4.3: testing a consumer DataForge did not start (produce to Kafka, wait for zero lag on the
+  user's consumer group, read the actual state the user's pipeline writes) is planned into
+  Milestone 7.
+
+**Approved** 2026-11-22.
 
 ---
 
@@ -362,6 +493,9 @@ exported from the database are byte-identical to CLI output for the same inputs.
 
 Chaos profiles, test executions, delivery attempts, validation reports and findings, persisted and
 queryable; an in-process execution runner with recovery of interrupted executions after restart.
+An execution can also target an external consumer group (D-4.3): DataForge produces to Kafka, waits
+for zero lag on the user's consumer group, and validates the actual state the user's pipeline
+reports.
 
 ## Milestone 8: Web UI: run history and report explorer
 
@@ -392,11 +526,13 @@ None at the moment.
 
 | Risk | Impact | Mitigation |
 | --- | --- | --- |
-| KafkaJS has had no release since 2.2.4 (February 2023). | Compatibility with current Kafka, unfixed bugs. | Keep Kafka behind a narrow delivery port; in Milestone 4 spike KafkaJS against the pinned broker and compare with `@confluentinc/kafka-javascript` (Confluent-supported, KafkaJS-compatible API, native) and `@platformatic/kafka` (pure TypeScript). Decide with evidence. |
+| KafkaJS has had no release since 2.2.4 (February 2023). | A future broker could break it; unfixed bugs (a Node 24 timer warning is filtered). | Spiked in Milestone 4: works with `apache/kafka:4.3.2` (ADR-0009). Only `@dataforge/kafka` imports it (lint-enforced); `@confluentinc/kafka-javascript` (KafkaJS-compatible API) is the fallback. Re-run the integration suite whenever the broker image changes. |
 | TypeScript 7 is current, but ts-jest and typescript-eslint do not support it yet. | Toolchain lock-in. | Pinned to TypeScript 6.0.3 (ADR-0005). Revisit when both support 7. |
 | Prisma `latest` is a release candidate. | Unstable persistence layer. | Pin a stable 7.x in Milestone 6 unless 8.0 is final by then. |
-| Docker Desktop is installed but its engine was not running during Milestones 1-3. | Blocks Milestones 4 and 6. | Start Docker Desktop before Milestone 4. Milestones 1-3 need no infrastructure. |
+| Kafka-backed checks need Docker Desktop running. | Without it, `deliver --transport kafka` and `pnpm test:integration` cannot run (exit code 3 and a clear message, never a silent pass). | `pnpm check` needs no Docker; CI runs the integration suite against the Compose broker on every push. Milestone 6 adds PostgreSQL to the same Compose file. |
 | Root-cause hints rely on a hand-written dependency model of the e-commerce domain. | New event types could leave findings under-explained (reported as "not explained by delivery"). | ADR-0008 names the rule; the end-to-end tests assert that every naive finding is explained under four profiles and on the spec-sized scenario, so a gap shows up as a failing test. |
-| The in-memory transport ignores delivery time (only order matters). | Processing-time effects (Milestone 5 windows) are not exercised offline. | By design (ADR-0008); Milestone 4 plays the plan in wall-clock time, Milestone 5 adds windows. |
+| The in-memory transport ignores delivery time (only order matters). | Processing-time effects (Milestone 5 windows) are not exercised offline. | By design (ADR-0008). Kafka delivery can play the plan in compressed wall-clock time (`--speed`) and records processing time; Milestone 5 adds windows. |
+| Kafka delivery is sequential (one acknowledged record at a time, about 1 ms each locally). | The spec-sized scenario takes about 20 s; the scenario limits would take minutes. | Exact per-record offsets and order are worth it for now; batching is a Milestone 10 profiling item (ADR-0009). |
+| With several partitions, root-cause hints still come from the plan. | A naive-target finding caused by cross-partition interleaving can be reported as "not explained by delivery". | One partition is the default, which equals the plan exactly. Hints from the consumer's processing log are a possible later addition. |
 | Plans are built in memory (about 19,000 attempts for the spec-sized scenario, planned in about 0.4 s). | Memory use near the scenario limits (100,000 orders, a few hundred thousand attempts). | Profile with generation in Milestone 10. |
 | In-memory generation. | Memory use near the scenario limits. | Limits enforced by the schema; profile in Milestone 10 before optimizing. |

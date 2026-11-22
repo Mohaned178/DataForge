@@ -1,6 +1,6 @@
 import type { CanonicalEvent } from '@dataforge/core';
 import type { DeliveryAttempt } from '@dataforge/chaos';
-import type { DeliveryMessage } from '../message';
+import { deliveryMessageFor } from '../message';
 import type { Target, TargetResult } from '../target';
 
 export interface InMemoryDeliveryInput {
@@ -48,17 +48,7 @@ export function deliverInMemory(input: InMemoryDeliveryInput): InMemoryDeliveryR
       failedAttempts += 1;
       continue;
     }
-    const message: DeliveryMessage = {
-      key: event.aggregateId,
-      event,
-      headers: {
-        attemptId: attempt.attemptId,
-        attemptNumber: attempt.attemptNumber,
-        deliverySequence: attempt.deliverySequence,
-        scheduledDeliveryTimeMs: attempt.scheduledDeliveryTimeMs,
-      },
-    };
-    input.target.handle(message);
+    input.target.handle(deliveryMessageFor(event, attempt));
     received.add(event.eventId);
     messages += 1;
   }

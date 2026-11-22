@@ -16,11 +16,20 @@ export const EXIT_OK = 0;
 export const EXIT_FAILED = 1;
 /** The command could not run because of its input: bad arguments, files or configuration. */
 export const EXIT_USAGE = 2;
+/** The command could not complete because infrastructure it needs (Kafka, the consumer process) was unavailable or failed. */
+export const EXIT_UNAVAILABLE = 3;
 
 export class UsageError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'UsageError';
+  }
+}
+
+export class UnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'UnavailableError';
   }
 }
 

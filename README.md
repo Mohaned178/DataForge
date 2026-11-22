@@ -8,15 +8,17 @@ every wrong result by the delivery faults that most likely caused it.
 
 The value is not the generated data. It is finding data-processing bugs in a reproducible way.
 
-> **Status:** Milestones 1 (deterministic simulation core + CLI), 2 (chaos delivery planner) and 3
-> (validation engine + reference targets, offline end to end) of 10 are approved. Next: Milestone 4,
-> Kafka delivery and an out-of-process target. See [docs/ROADMAP.md](docs/ROADMAP.md).
+> **Status:** Milestones 1 (deterministic simulation core + CLI), 2 (chaos delivery planner), 3
+> (validation engine + reference targets, offline end to end) and 4 (Kafka delivery + out-of-process
+> target) of 10 are approved. Next: Milestone 5, event-time windows and late data. See
+> [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Requirements
 
 - Node.js 24 LTS
 - pnpm 11 (`corepack enable` or `npm install -g pnpm`)
-- Docker Desktop: not needed until Milestone 4
+- Docker Desktop with Docker Compose: for the Kafka broker (`deliver --transport kafka`,
+  `pnpm test:integration`); everything else runs without it
 
 ## Quick start (PowerShell)
 
@@ -59,8 +61,10 @@ plan in its own directory, without touching the run:
 `explain` shows every attempt of one event, why it was scheduled when it was, whether it is
 delivered, and whether the target receives it out of order within its aggregate.
 
-`deliver` plays a plan, in delivery order, into a reference target running in process, and writes
-the state the target ends in:
+`deliver` plays a plan, in delivery order, into a reference target, and writes the state the target
+ends in. With `--transport memory` (the default) the target runs in process; with
+`--transport kafka` every delivered attempt is produced to a real Kafka broker and the target runs
+as a separate consumer process (see "Through Kafka" below):
 
 | Target | Behaviour |
 | --- | --- |
@@ -71,6 +75,25 @@ the state the target ends in:
 | --- | --- |
 | `actual-state.json` | The target's final state, in the same shape as `expected-state.json`. Your own pipeline can write this format too. |
 | `target-run.json` | Which target consumed which plan of which run, message counts, events it never applied. |
+
+### Through Kafka
+
+```powershell
+docker compose up -d --wait        # one Kafka broker (apache/kafka:4.3.2, KRaft); docker compose down removes it
+pnpm dataforge deliver --run out/run-42 --plan out/plan-42-7 --target naive --out out/kafka-naive-42-7 --transport kafka
+pnpm dataforge validate --run out/run-42 --actual out/kafka-naive-42-7/actual-state.json --plan out/plan-42-7
+```
+
+A new topic and consumer group per delivery; the consumer process joins, the plan is played in
+delivery order (`--speed max` by default, or `--speed <factor>` simulated milliseconds per real
+millisecond), and the consumer is told to finish once its consumer group's lag is zero. Planned
+failures are never sent. With the default single partition, `actual-state.json` and
+`target-run.json` are byte-identical to the in-memory delivery; `--partitions <n>` keeps per-key
+order only. Besides the two shared files the output directory holds `delivery-log.jsonl` (every
+attempt: partition, offset, send times), `processing-log.jsonl` (every record the consumer handled,
+with processing time), `consumer-report.json`, `kafka-run.json` and the two processes' Kafka client
+logs. Brokers: `--brokers`, else `KAFKA_BROKERS` (see `.env.example`), else `localhost:9092`. Exit
+code 3 means Kafka or the consumer was unavailable.
 
 `validate` compares an actual state with the run's expected state, entity by entity, and checks 16
 state invariants (references resolve, nothing paid twice, status consistent with payments and
@@ -84,7 +107,8 @@ likely caused it. Exit code 0 means the state is correct, 1 means findings.
 pnpm test        # all automated tests
 pnpm typecheck   # strict TypeScript
 pnpm lint        # ESLint, including the determinism guard for packages/*
-pnpm check       # all three
+pnpm check       # all three (no Docker needed)
+pnpm test:integration   # build, then the Kafka integration tests (needs docker compose up -d --wait)
 ```
 
 Each milestone ships a manual verification guide (`docs/manual-verification/`) and a self-check that
@@ -94,6 +118,7 @@ runs the same cases and checks every expected value:
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verification\milestone-1.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verification\milestone-2.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verification\milestone-3.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verification\milestone-4.ps1
 ```
 
 ## Milestone workflow (Claude Code)
@@ -115,7 +140,10 @@ packages/core          @dataforge/core: simulation engine (no I/O, no frameworks
 packages/chaos         @dataforge/chaos: chaos delivery planner (no I/O, no frameworks)
 packages/validation    @dataforge/validation: expected-vs-actual validation and root-cause hints (no I/O)
 packages/targets       @dataforge/targets: reference targets and the in-memory transport (no I/O)
+packages/kafka         @dataforge/kafka: Kafka record contract, plan executor, lag, consumer runner
 apps/cli               @dataforge/cli: the dataforge command
+apps/consumer          @dataforge/consumer: the reference consumer as a standalone process
+compose.yaml           local Kafka broker (KRaft)
 scenarios/             example scenario definitions
 chaos-profiles/        example chaos profiles
 scripts/verification/  per-milestone self-checks (PowerShell 5.1 and 7)
@@ -129,6 +157,6 @@ docs/                  specification, architecture, roadmap, data formats, manua
 - [Manual verification guides](docs/manual-verification/)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Data formats](docs/data-formats.md): scenario, events, expected state, manifest, chaos profile,
-  delivery plan and summary, actual state, target run, validation report
+  delivery plan and summary, actual state, target run, Kafka record and logs, validation report
 - [Roadmap](docs/ROADMAP.md)
 - [Architecture decision records](docs/adr/)
