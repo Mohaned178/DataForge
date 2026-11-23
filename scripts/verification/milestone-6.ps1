@@ -171,21 +171,24 @@ Test-Case 'MV-6.2' 'Start PostgreSQL with an empty database and apply the migrat
     $migrate = Invoke-Pnpm @('db:migrate')
     Assert-Exit $migrate 0 'pnpm db:migrate'
     Assert-Match $migrate.Text 'Applying migration `20261122232906_init`' 'migration applied'
+    # Milestone 7 added a second migration and eight tables (D-7.3); both migrations apply to an empty database.
+    Assert-Match $migrate.Text 'Applying migration `20261123140000_test_executions`' 'Milestone 7 migration applied'
     Assert-Match $migrate.Text 'All migrations have been successfully applied\.' 'migrations complete'
     Assert-Match (Invoke-Pnpm @('db:migrate')).Text 'No pending migrations to apply\.' 'second migrate has nothing to do'
     $tables = Invoke-Sql '\dt'
     foreach ($table in '_prisma_migrations', 'canonical_event', 'expected_state_snapshot', 'scenario', 'scenario_version', 'simulation_run') {
         Assert-Match $tables.Text "public \| $table " "table $table"
     }
-    Assert-Match $tables.Text '\(6 rows\)' 'six tables'
+    Assert-Match $tables.Text '\(14 rows\)' 'fourteen tables: the six of Milestone 6 and eight of Milestone 7'
     Remove-Item Env:DATABASE_URL
 }
 
 Test-Case 'MV-6.3' 'The integration suite against Kafka and PostgreSQL' {
     $integration = Invoke-Pnpm @('test:integration')
     Assert-Exit $integration 0 'pnpm test:integration'
-    Assert-Match $integration.Text 'Test Suites:\s+6 passed, 6 total' 'integration suites'
-    Assert-Match $integration.Text 'Tests:\s+67 passed, 67 total' 'integration tests'
+    # Counts as of Milestone 7 (D-7.3).
+    Assert-Match $integration.Text 'Test Suites:\s+9 passed, 9 total' 'integration suites'
+    Assert-Match $integration.Text 'Tests:\s+96 passed, 96 total' 'integration tests'
 }
 
 Test-Case 'MV-6.4' 'Start the API and check its health' {
@@ -403,7 +406,7 @@ Test-Case 'MV-6.15' 'The API without PostgreSQL, or without migrations' {
     Set-ApiEnvironment $emptyDb
     $unmigrated = Invoke-Pnpm @('--silent', 'api')
     Assert-Exit $unmigrated 3 'API on an empty database'
-    Assert-Match $unmigrated.Text ([regex]::Escape('The database localhost:5433/dataforge_selfcheck_empty is not migrated (pending: 20261122232906_init).')) 'not migrated message'
+    Assert-Match $unmigrated.Text ([regex]::Escape('The database localhost:5433/dataforge_selfcheck_empty is not migrated (pending: 20261122232906_init, 20261123140000_test_executions).')) 'not migrated message'
     Assert-Match $unmigrated.Text ([regex]::Escape('Apply the migrations with "pnpm db:migrate".')) 'migrate hint'
     Invoke-Sql 'DROP DATABASE dataforge_selfcheck_empty;' 'postgres' | Out-Null
 }

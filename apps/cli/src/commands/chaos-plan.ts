@@ -1,18 +1,10 @@
 import { resolve } from 'node:path';
 import { parseArgs } from 'node:util';
-import { InvalidSeedError, canonicalJson, normalizeSeed, parseUtcInstant, simTimeToIso } from '@dataforge/core';
-import {
-  ChaosProfileValidationError,
-  PLANNER_VERSION,
-  parseChaosProfile,
-  planDelivery,
-  serializeDeliveryPlan,
-  type ChaosProfile,
-  type DeliverySummary,
-} from '@dataforge/chaos';
+import { InvalidSeedError, normalizeSeed, parseUtcInstant, simTimeToIso } from '@dataforge/core';
+import { ChaosProfileValidationError, PLANNER_VERSION, parseChaosProfile, type ChaosProfile, type DeliverySummary } from '@dataforge/chaos';
+import { PLAN_FILES, planExecution } from '@dataforge/execution';
 import { EXIT_OK, EXIT_USAGE, UsageError, formatCount, padRight, readJsonFile, type CliIo } from '../cli-io';
-import { PLAN_FILES, type DeliverySummaryFile } from '../plan-directory';
-import { RUN_FILES, fileEntry, prepareOutputDirectory, readIntactCanonicalLog, readManifest, samePath, writeRunFile } from '../run-directory';
+import { RUN_FILES, prepareOutputDirectory, readIntactCanonicalLog, readManifest, samePath, writeRunFile } from '../run-directory';
 import { describeWindowing } from '../windows-output';
 import { formatSimTime } from './timeline';
 
@@ -70,33 +62,10 @@ function runChaosPlan(args: readonly string[], io: CliIo): number {
   prepareOutputDirectory(outDirectory, values.force, 'plan files');
 
   const startedAt = performance.now();
-  const plan = planDelivery({ events, profile, chaosSeed });
-  const contents = {
-    [PLAN_FILES.plan]: serializeDeliveryPlan(plan.attempts),
-    [PLAN_FILES.profile]: `${canonicalJson(profile, 2)}\n`,
-  };
-  const summaryFile: DeliverySummaryFile = {
-    format: 'dataforge.delivery-plan',
-    formatVersion: 1,
-    plannerVersion: plan.plannerVersion,
-    chaosSeed: plan.chaosSeed,
-    profile: { name: profile.name, hash: plan.profileHash },
-    source: {
-      engineVersion: manifest.engineVersion,
-      seed: manifest.seed,
-      scenarioName: manifest.scenario.name,
-      scenarioHash: manifest.scenario.hash,
-      eventsSha256: plan.eventsSha256,
-    },
-    summary: plan.summary,
-    files: {
-      [PLAN_FILES.plan]: fileEntry(contents[PLAN_FILES.plan]),
-      [PLAN_FILES.profile]: fileEntry(contents[PLAN_FILES.profile]),
-    },
-  };
-  writeRunFile(outDirectory, PLAN_FILES.plan, contents[PLAN_FILES.plan]);
-  writeRunFile(outDirectory, PLAN_FILES.profile, contents[PLAN_FILES.profile]);
-  writeRunFile(outDirectory, PLAN_FILES.summary, `${canonicalJson(summaryFile, 2)}\n`);
+  const { plan, summaryFile, contents } = planExecution({ manifest, events, profile, chaosSeed });
+  for (const name of [PLAN_FILES.plan, PLAN_FILES.profile, PLAN_FILES.summary] as const) {
+    writeRunFile(outDirectory, name, contents[name]);
+  }
   const elapsedMs = Math.round(performance.now() - startedAt);
 
   const { summary } = plan;

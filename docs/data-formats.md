@@ -461,6 +461,10 @@ the report gains `windowing` and an `actual-windows.json` entry in `files`.
 }
 ```
 
+For an execution to an external pipeline (Milestone 7, API only), `kafka` names the user's topic and
+consumer group and the topic's partition count, and `consumer` and `consumed` are `null`: DataForge
+did not start the consumer, so it cannot say what the consumer received.
+
 ## Validation report (`dataforge validate --report <file>`)
 
 ```jsonc
@@ -593,6 +597,23 @@ millisecond precision and are wall-clock application metadata, never simulation 
 A run's events, snapshot and final status are written in one transaction: a run that is not
 `succeeded` has no events and no snapshot.
 
+Milestone 7 (migration `20261123140000_test_executions`) adds:
+
+| Table | Columns | Constraints |
+| --- | --- | --- |
+| `chaos_profile` | `id`, `name`, `created_at` | `name` unique. |
+| `chaos_profile_version` | `id`, `chaos_profile_id`, `version`, `profile_hash` (`sha256:...`), `definition` (JSONB: the resolved profile, as in `chaos-profile.resolved.json`), `created_at` | Unique `(chaos_profile_id, version)` and `(chaos_profile_id, profile_hash)`; immutable. |
+| `test_execution` | `id`, `run_id`, `chaos_profile_version_id`, `chaos_seed`, `planner_version`, `target` (JSONB, below), `status` (`queued`, `running`, `awaiting_actual_state`, `completed`, `failed`), `error`, `requested_at`, `started_at`, `delivered_at`, `finished_at`, `attempt_count`, `verdict` (`PASS`, `FAIL`), `finding_count`, `window_finding_count`, `work_directory` | The status changes; nothing else is updated after the execution completed or failed. |
+| `delivery_attempt` | `execution_id`, the fields of a delivery attempt as columns (`delivery_sequence`, `attempt_id`, `attempt_number`, `kind`, `planned_outcome`, `scheduled_delivery_time_ms`, `event_id`, `event_sequence`, `event_type`, `event_time_ms`, `aggregate_id`, `aggregate_version`, `derived_from` and `faults` as JSONB), and for Kafka its delivery-log entry (`kafka_outcome`, `kafka_partition`, `kafka_offset`, `due_at_ms`, `started_at_ms`, `acked_at_ms`, `drift_ms`) | Primary key `(execution_id, delivery_sequence)`; unique `(execution_id, attempt_id)`; indexes by event and by aggregate; immutable. |
+| `execution_file` | `execution_id`, `name`, `document` (JSONB), `sha256`, `bytes` | One row per JSON file; `sha256` and `bytes` are those of the file as written; immutable. |
+| `validation_report` | `execution_id`, `verdict`, `document` (JSONB: the report with empty finding lists), `sha256`, `bytes` (of the whole `validation-report.json`) | Immutable. |
+| `validation_finding` | `execution_id`, `ordinal` (position in `findings`, from 0), `category`, `entity_type`, `entity_id`, `check`, `message`, `differences`, `causes` (JSONB) | Primary key `(execution_id, ordinal)`; indexes by category and by entity; immutable. |
+| `window_finding` | `execution_id`, `ordinal` (position in `windows.findings`), `category`, `window_start_ms`, `window_end_ms`, `message`, `differences`, `causes` | Primary key `(execution_id, ordinal)`; immutable. |
+
+A reference-target execution writes all of its rows and `completed` in one transaction. An external
+execution writes its attempts, `delivery-summary.json` and `kafka-run.json` when it starts waiting,
+and the rest when its actual state is submitted.
+
 ## HTTP API (`pnpm api`, default `http://127.0.0.1:3000`)
 
 JSON in and out (`Content-Type: application/json`). Errors have the shape
@@ -631,5 +652,60 @@ A run:
   "eventsByType": { "ProductCreated": 12, "...": 0 },
   "files": { "events.jsonl": { "sha256": "...", "bytes": 146142 }, "...": {} },
   "summary": { "orders": 120, "revenueMinor": 2525664, "...": 0 }
+}
+```
+
+### Chaos profiles and test executions (Milestone 7)
+
+JSON bodies may be up to 64 MB (a submitted actual state).
+
+| Method and path | Body or query | Answer |
+| --- | --- | --- |
+| `POST /chaos-profiles` | A chaos profile file (the format above) | `201` the profile with version 1; `400` invalid (paths, the loss rule included); `409` a profile with that name exists. |
+| `GET /chaos-profiles` | | `200 {chaosProfiles: [{id, name, createdAt, latestVersion}]}`, by name. |
+| `GET /chaos-profiles/:id` | | `200 {id, name, createdAt, latestVersion, versions: [{version, profileHash, createdAt}]}`. |
+| `POST /chaos-profiles/:id/versions` | A profile file with the profile's name | `201` a new version; `200` the identical existing one; `400` another name. |
+| `GET /chaos-profiles/:id/versions/:version` | | `200 {chaosProfileId, chaosProfileName, version, profileHash, createdAt, definition}`. |
+| `POST /executions` | `{runId, chaosProfileId, chaosProfileVersion?, chaosSeed, target}` (below); the version defaults to the latest, the chaos seed follows the seed rules | `202` the execution, `status: "queued"`; `404` unknown run, profile or version; `409` the run has not succeeded. |
+| `GET /executions` | `runId`, `chaosProfileId`, `status`, `verdict`, `limit` (1-200, default 50), `offset` | `200 {executions, total, limit, offset}`, newest first. |
+| `GET /executions/:id` | | `200` the execution (below). |
+| `POST /executions/:id/actual-state` | `{actualState, actualWindows?}`: the documents of `actual-state.json` and `actual-windows.json` | `200` the completed execution; `400` with the path of each problem (prefixed `actualState.` or `actualWindows.`), nothing changes; `409` unless it awaits its actual state. |
+| `GET /executions/:id/attempts` | `eventId`, `aggregateId`, `kind`, `fault`, `plannedOutcome`, `fromSequence` (default 1), `limit` (1-1,000, default 100) | `200 {executionId, attempts, nextSequence}`: delivery attempts in delivery order, each with `kafka` (its delivery-log entry: `outcome`, `partition`, `offset`, `dueAtMs`, `startedAtMs`, `ackedAtMs`, `driftMs`) or `null` in memory. `409` until delivered. |
+| `GET /executions/:id/report` | | `200` the validation report without its findings (and without `windows.findings`). `409` until completed. |
+| `GET /executions/:id/findings` | `category`, `entityType`, `entityId`, `limit` (1-1,000, default 100), `offset` | `200 {executionId, findings, total, limit, offset}`, in report order; each finding has its `ordinal`. |
+| `GET /executions/:id/window-findings` | `category`, `limit`, `offset` | The same for window findings. |
+| `GET /executions/:id/files/<name>` | `delivery-plan.jsonl`, `chaos-profile.resolved.json`, `delivery-summary.json`, `delivery-log.jsonl`, `kafka-run.json`, `actual-state.json`, `actual-windows.json`, `target-run.json`, `validation-report.json` | `200` the exact bytes `dataforge chaos plan`, `deliver` and `validate --report` write for the same inputs; `409` until delivered; `404` a file this execution does not have (with the reason); `500 Execution Integrity Error` when the rebuilt file does not match its recorded checksum. |
+
+A target, as requested and as stored (defaults filled in):
+
+```jsonc
+{ "type": "reference", "name": "correct" }                     // transport "memory" by default
+{ "type": "reference", "name": "naive", "transport": "kafka",   // a new topic and the consumer process
+  "partitions": 1, "speed": "max", "timeoutSeconds": 60 }       // the defaults; Kafka options only with "kafka"
+{ "type": "external", "topic": "shop-orders", "groupId": "shop-pipeline",   // the user's topic and group
+  "speed": "max", "timeoutSeconds": 60 }
+```
+
+An execution:
+
+```jsonc
+{
+  "id": "01a20620-ba7b-72cc-b814-4ca97496d6a7",
+  "status": "completed",            // queued | running | awaiting_actual_state | completed | failed
+  "verdict": "PASS",                // PASS | FAIL once completed
+  "error": null,                    // why it failed
+  "run": { "id": "...", "seed": "42", "scenario": { "id": "...", "name": "ecommerce-small", "version": 1 } },
+  "chaosProfile": { "id": "...", "name": "spec-example", "version": 1, "profileHash": "sha256:..." },
+  "chaosSeed": "7",
+  "plannerVersion": "0.1.0",
+  "target": { "type": "reference", "name": "correct", "transport": "kafka", "partitions": 1, "speed": "max", "timeoutSeconds": 60 },
+  "requestedAt": "...", "startedAt": "...", "deliveredAt": "...", "finishedAt": "...",
+  "attemptCount": 486, "findingCount": 0, "windowFindingCount": null,
+  "delivery": { "attempts": 486, "faults": { "...": {} }, "...": 0 },    // the plan's summary
+  "targetResult": { "delivery": { "messages": 486, "...": 0 }, "counters": { "duplicatesIgnored": 14 }, "parkedEvents": 0 },
+  "kafka": { "topic": "dataforge.2026...", "groupId": "...", "partitions": 1, "sent": 486, "plannedFailures": 0,
+             "durationMs": 790, "lagZeroAfterMs": 29 },                  // null in memory
+  "workDirectory": "C:\\...\\dataforge-executions\\01a20620-...",         // Kafka executions only
+  "files": { "delivery-plan.jsonl": { "sha256": "...", "bytes": 167512 }, "...": {} }   // what can be downloaded now
 }
 ```

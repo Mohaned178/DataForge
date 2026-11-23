@@ -2,6 +2,7 @@
 import { existsSync } from 'node:fs';
 import { Logger } from '@nestjs/common';
 import { ENGINE_VERSION } from '@dataforge/core';
+import { silenceKafkaClientTimerWarning } from '@dataforge/kafka';
 import { createApiApplication } from './app';
 import { ConfigError, describeDatabase, loadApiConfig, type ApiConfig } from './config';
 import { checkDatabase } from './database/database-status';
@@ -60,6 +61,8 @@ async function main(): Promise<number> {
   return 0;
 }
 
+// Kafka executions use KafkaJS, which arms negative timers on Node 24 (ADR-0009): that one warning is hidden, every other is printed.
+silenceKafkaClientTimerWarning();
 main().then(
   (code) => {
     if (code !== 0) {

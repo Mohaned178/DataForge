@@ -4,7 +4,8 @@ import { z } from 'zod';
 export const RUN_STATUSES = ['queued', 'running', 'succeeded', 'failed'] as const;
 export type RunStatusName = (typeof RUN_STATUSES)[number];
 
-const seedSchema = z.union([z.string(), z.number()], { error: 'must be a string or a whole number' }).transform((seed, ctx) => {
+/** A seed as the CLI takes it: a string or a whole number, normalized (42 and "42" are one seed). */
+export const seedSchema = z.union([z.string(), z.number()], { error: 'must be a string or a whole number' }).transform((seed, ctx) => {
   try {
     return normalizeSeed(seed);
   } catch (error) {

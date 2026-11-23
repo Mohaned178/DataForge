@@ -55,6 +55,8 @@ export interface ExecutePlanInput {
   readonly speed: Speed;
   readonly sender: RecordSender;
   readonly clock: WallClock;
+  /** Stops the execution before the next attempt (it throws the signal's reason), for a process that is shutting down. */
+  readonly signal?: AbortSignal;
 }
 
 export interface ExecutionResult {
@@ -99,6 +101,7 @@ export async function executePlan(input: ExecutePlanInput): Promise<ExecutionRes
   let maxDriftMs: number | null = null;
 
   for (const attempt of ordered) {
+    input.signal?.throwIfAborted();
     const event = eventsById.get(attempt.eventId);
     if (event === undefined) {
       throw new PlanDoesNotMatchLogError(attempt);

@@ -4,8 +4,6 @@ import { parseArgs } from 'node:util';
 import {
   ActualStateValidationError,
   ActualWindowsValidationError,
-  canonicalJson,
-  computeExpectedWindows,
   parseActualState,
   parseActualWindows,
   parseUtcInstant,
@@ -14,7 +12,8 @@ import {
   type ActualWindows,
   type WindowingSpec,
 } from '@dataforge/core';
-import { FINDING_CATEGORIES, validate, type DeliveryCause, type Finding, type ValidationResult } from '@dataforge/validation';
+import { buildValidationReport, reportPlanOf, reportSourceOf, serializeValidationReport, validateExecution } from '@dataforge/execution';
+import { FINDING_CATEGORIES, type DeliveryCause, type Finding, type ValidationResult } from '@dataforge/validation';
 import { EXIT_FAILED, EXIT_OK, EXIT_USAGE, UsageError, formatCount, padRight, readJsonFile, type CliIo } from '../cli-io';
 import { DELIVERY_FILES, readTargetRun, type TargetRunFile } from '../delivery-directory';
 import { PLAN_FILES, readPlanForRun, type LoadedPlan } from '../plan-directory';
@@ -101,29 +100,26 @@ export function runValidate(args: readonly string[], io: CliIo): number {
     }
     throw error;
   }
-  const windowsInput =
-    windows === undefined
-      ? {}
-      : { windows: { windowing: windows.windowing, expected: computeExpectedWindows(events, windows.windowing.sizeMs), actual: windows.actual } };
-  const result = validate({ expected, actual, ...windowsInput, ...(plan === undefined ? {} : { attempts: plan.attempts }) });
+  const result = validateExecution({
+    events,
+    expected,
+    actual,
+    ...(windows === undefined ? {} : { windows: { windowing: windows.windowing, actual: windows.actual } }),
+    ...(plan === undefined ? {} : { attempts: plan.attempts }),
+  });
 
   if (reportPath !== undefined) {
-    const report = {
-      format: 'dataforge.validation-report',
-      formatVersion: 1,
-      source: { seed: manifest.seed, scenarioName: manifest.scenario.name, eventsSha256 },
+    const report = buildValidationReport({
+      source: reportSourceOf(manifest),
       target:
         targetRun === undefined
           ? null
           : { name: targetRun.target.name, editedAfterDelivery: edited, ...(windows === undefined ? {} : { windowsEditedAfterDelivery: windows.edited }) },
-      plan:
-        plan === undefined
-          ? null
-          : { chaosSeed: plan.summaryFile.chaosSeed, profile: plan.summaryFile.profile, planSha256: plan.summaryFile.files[PLAN_FILES.plan].sha256 },
-      ...result,
-    };
+      plan: plan === undefined ? null : reportPlanOf(plan.summaryFile),
+      result,
+    });
     mkdirSync(dirname(reportPath), { recursive: true });
-    writeFileSync(reportPath, `${canonicalJson(report, 2)}\n`, { encoding: 'utf8' });
+    writeFileSync(reportPath, serializeValidationReport(report), { encoding: 'utf8' });
   }
 
   printHeader(io, { runDirectory, seed: manifest.seed, scenarioName: manifest.scenario.name, actualPath, targetRun, edited, plan, values });

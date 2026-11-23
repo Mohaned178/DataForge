@@ -2,7 +2,7 @@
   "name": "@dataforge/api",
   "version": "0.1.0",
   "private": true,
-  "description": "The DataForge HTTP API (NestJS + Prisma + PostgreSQL): scenarios, immutable scenario versions, simulation runs processed in the background, run history, stored canonical events and run file downloads.",
+  "description": "The DataForge HTTP API (NestJS + Prisma + PostgreSQL): scenarios and chaos profiles with immutable versions, simulation runs and test executions processed in the background, run and execution history, stored events, delivery attempts, reports and findings, and file downloads.",
   "main": "./dist/main.js",
   "scripts": {
     "postinstall": "prisma generate --no-hints",
@@ -13,7 +13,12 @@
     "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\""
   },
   "dependencies": {
+    "@dataforge/chaos": "workspace:*",
     "@dataforge/core": "workspace:*",
+    "@dataforge/execution": "workspace:*",
+    "@dataforge/kafka": "workspace:*",
+    "@dataforge/targets": "workspace:*",
+    "@dataforge/validation": "workspace:*",
     "@nestjs/common": "12.6.0",
     "@nestjs/core": "12.6.0",
     "@nestjs/platform-express": "12.6.0",

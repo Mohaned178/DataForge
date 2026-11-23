@@ -1,4 +1,5 @@
 import { ENGINE_VERSION } from '@dataforge/core';
+import { SerialQueue } from '../background/serial-queue';
 import { generateRun, type GeneratedRun, type RunGenerator, type RunInputs } from './run-generation';
 
 /** A run the runner has moved from queued to running; nobody else will process it. */
@@ -38,9 +39,7 @@ const silent: RunLog = { log: () => undefined, error: () => undefined };
  * before the database client disconnects.
  */
 export class RunRunner {
-  private readonly queue: string[] = [];
-  private active: Promise<void> | undefined;
-  private stopping = false;
+  private readonly queue = new SerialQueue((runId) => this.process(runId));
   private readonly generate: RunGenerator;
   private readonly engineVersion: string;
   private readonly log: RunLog;
@@ -55,11 +54,7 @@ export class RunRunner {
   }
 
   enqueue(runId: string): void {
-    if (this.stopping || this.queue.includes(runId)) {
-      return;
-    }
-    this.queue.push(runId);
-    this.drain();
+    this.queue.enqueue(runId);
   }
 
   /** Requeues the runs a stopped process left unfinished. Generation is deterministic, so the result is the same. */
@@ -73,17 +68,13 @@ export class RunRunner {
   }
 
   /** Resolves when the queue is empty and no run is being processed. */
-  async whenIdle(): Promise<void> {
-    while (this.active !== undefined) {
-      await this.active;
-    }
+  whenIdle(): Promise<void> {
+    return this.queue.whenIdle();
   }
 
   /** Takes no new work and waits for the run in progress; queued runs stay queued in the database. */
-  async stop(): Promise<void> {
-    this.stopping = true;
-    this.queue.length = 0;
-    await this.whenIdle();
+  stop(): Promise<void> {
+    return this.queue.stop();
   }
 
   async onApplicationBootstrap(): Promise<void> {
@@ -92,24 +83,6 @@ export class RunRunner {
 
   async onModuleDestroy(): Promise<void> {
     await this.stop();
-  }
-
-  private drain(): void {
-    if (this.active !== undefined || this.stopping) {
-      return;
-    }
-    this.active = (async () => {
-      let runId = this.queue.shift();
-      while (runId !== undefined && !this.stopping) {
-        await this.process(runId);
-        runId = this.queue.shift();
-      }
-    })().finally(() => {
-      this.active = undefined;
-      if (this.queue.length > 0) {
-        this.drain();
-      }
-    });
   }
 
   private async process(runId: string): Promise<void> {

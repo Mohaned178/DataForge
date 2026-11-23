@@ -44,6 +44,27 @@ function execute(attempts: readonly DeliveryAttempt[], speed: number | 'max', cl
 }
 
 describe('plan executor', () => {
+  it('stops before the next attempt once its signal is aborted (a process that is shutting down)', async () => {
+    const clock = new FakeClock();
+    const controller = new AbortController();
+    const sender: RecordSender = {
+      send: (record) => {
+        if (decodeDeliveryRecord(record).headers.deliverySequence === 3) {
+          controller.abort(new Error('the API is stopping'));
+        }
+        return Promise.resolve({ partition: 0, offset: '0' });
+      },
+    };
+    const sent: number[] = [];
+    const recording: RecordSender = { send: (record) => (sent.push(decodeDeliveryRecord(record).headers.deliverySequence), sender.send(record)) };
+    const delivered = flaky.filter((attempt) => attempt.plannedOutcome === 'delivered').slice(0, 6);
+    await expect(
+      executePlan({ events: simulation.events, attempts: delivered, epochUnixMs: EPOCH_UNIX_MS, speed: 'max', sender: recording, clock, signal: controller.signal }),
+    ).rejects.toThrow('the API is stopping');
+    expect(sent).toEqual(delivered.slice(0, sent.length).map((attempt) => attempt.deliverySequence));
+    expect(sent.at(-1)).toBe(3);
+  });
+
   it('at speed max sends every delivered attempt once, in delivery order, without waiting', async () => {
     const clock = new FakeClock();
     const sender = new RecordingSender(clock);

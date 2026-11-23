@@ -1,46 +1,19 @@
 import { existsSync, statSync } from 'node:fs';
-import { z } from 'zod';
 import { sha256Hex } from '@dataforge/core';
 import {
   ChaosProfileValidationError,
   DeliveryPlanParseError,
-  deliverySummarySchema,
   parseChaosProfile,
   parseDeliveryPlan,
   type ChaosProfile,
   type DeliveryAttempt,
 } from '@dataforge/chaos';
+import { PLAN_FILES, deliverySummaryFileSchema, type DeliverySummaryFile } from '@dataforge/execution';
 import { UsageError } from './cli-io';
-import { fileEntrySchema, readRunFile, type RunManifest, RUN_FILES } from './run-directory';
+import { readRunFile, type RunManifest, RUN_FILES } from './run-directory';
 
-export const PLAN_FILES = {
-  plan: 'delivery-plan.jsonl',
-  profile: 'chaos-profile.resolved.json',
-  summary: 'delivery-summary.json',
-} as const;
-
-export const deliverySummaryFileSchema = z.strictObject({
-  format: z.literal('dataforge.delivery-plan'),
-  formatVersion: z.literal(1),
-  plannerVersion: z.string(),
-  chaosSeed: z.string(),
-  profile: z.strictObject({ name: z.string(), hash: z.string() }),
-  /** The simulation run the plan belongs to, identified by content, never by path. */
-  source: z.strictObject({
-    engineVersion: z.string(),
-    seed: z.string(),
-    scenarioName: z.string(),
-    scenarioHash: z.string(),
-    eventsSha256: z.string().regex(/^[0-9a-f]{64}$/),
-  }),
-  summary: deliverySummarySchema,
-  files: z.strictObject({
-    [PLAN_FILES.plan]: fileEntrySchema,
-    [PLAN_FILES.profile]: fileEntrySchema,
-  }),
-});
-
-export type DeliverySummaryFile = z.output<typeof deliverySummaryFileSchema>;
+// The plan-file format lives in @dataforge/execution, shared with the API.
+export { PLAN_FILES, deliverySummaryFileSchema, type DeliverySummaryFile } from '@dataforge/execution';
 
 export interface LoadedPlan {
   readonly summaryFile: DeliverySummaryFile;

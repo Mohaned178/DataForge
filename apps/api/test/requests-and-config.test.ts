@@ -1,4 +1,5 @@
-import { ConfigError, DEFAULT_DATABASE_URL, describeDatabase, loadApiConfig } from '../src/config';
+import { resolve } from 'node:path';
+import { ConfigError, DEFAULT_DATABASE_URL, DEFAULT_EXECUTION_WORK_DIR, describeDatabase, loadApiConfig } from '../src/config';
 import { listRunsQuerySchema, runEventsQuerySchema, startRunSchema } from '../src/runs/run-requests';
 
 const SCENARIO_ID = '01a2059d-1421-7651-8848-976194c3e863';
@@ -8,17 +9,48 @@ function issues(result: { success: boolean; error?: { issues: readonly { path: r
 }
 
 describe('API configuration', () => {
-  it('defaults to the Compose database on 127.0.0.1:3000', () => {
-    expect(loadApiConfig({})).toEqual({ databaseUrl: DEFAULT_DATABASE_URL, host: '127.0.0.1', port: 3000 });
-    expect(loadApiConfig({ DATABASE_URL: '', API_PORT: '' })).toEqual(loadApiConfig({}));
+  it('defaults to the Compose database on 127.0.0.1:3000 and the Compose broker', () => {
+    expect(loadApiConfig({})).toEqual({
+      databaseUrl: DEFAULT_DATABASE_URL,
+      host: '127.0.0.1',
+      port: 3000,
+      kafkaBrokers: ['localhost:9092'],
+      executionWorkDirectory: DEFAULT_EXECUTION_WORK_DIR,
+    });
+    expect(loadApiConfig({ DATABASE_URL: '', API_PORT: '', KAFKA_BROKERS: '', EXECUTION_WORK_DIR: '' })).toEqual(loadApiConfig({}));
   });
 
-  it('reads DATABASE_URL, API_HOST and API_PORT', () => {
-    expect(loadApiConfig({ DATABASE_URL: 'postgres://u:p@db:6543/other', API_HOST: '0.0.0.0', API_PORT: '8080' })).toEqual({
+  it('reads DATABASE_URL, API_HOST, API_PORT, KAFKA_BROKERS and EXECUTION_WORK_DIR', () => {
+    const workDirectory = resolve('work', 'executions');
+    expect(
+      loadApiConfig({
+        DATABASE_URL: 'postgres://u:p@db:6543/other',
+        API_HOST: '0.0.0.0',
+        API_PORT: '8080',
+        KAFKA_BROKERS: 'broker-1:9092, broker-2:19092',
+        EXECUTION_WORK_DIR: workDirectory,
+      }),
+    ).toEqual({
       databaseUrl: 'postgres://u:p@db:6543/other',
       host: '0.0.0.0',
       port: 8080,
+      kafkaBrokers: ['broker-1:9092', 'broker-2:19092'],
+      executionWorkDirectory: workDirectory,
     });
+  });
+
+  it('rejects a broker list that is not host:port and a relative work directory', () => {
+    let caught: unknown;
+    try {
+      loadApiConfig({ KAFKA_BROKERS: 'localhost', EXECUTION_WORK_DIR: 'out/executions' });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(ConfigError);
+    expect((caught as ConfigError).issues).toEqual([
+      'KAFKA_BROKERS: Invalid Kafka broker list "localhost": "localhost" is not host:port. Use host:port, comma-separated (for example localhost:9092).',
+      'EXECUTION_WORK_DIR: must be an absolute directory path',
+    ]);
   });
 
   it('rejects an invalid port and a database URL that is not PostgreSQL, naming each variable', () => {

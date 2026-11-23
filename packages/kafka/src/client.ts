@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs';
-import { Kafka, Partitioners, logLevel, type Admin, type LogEntry, type Producer } from 'kafkajs';
+import { AssignerProtocol, Kafka, Partitioners, logLevel, type Admin, type LogEntry, type Producer } from 'kafkajs';
 import type { RecordSender, SentRecord, WallClock } from './executor';
 import { consumerGroupLag, type GroupLag } from './lag';
 import type { DeliveryRecord } from './record';
@@ -102,6 +102,48 @@ export async function createDeliveryTopic(admin: Admin, topic: string, partition
   }
 }
 
+/** The number of partitions of a topic, or undefined when the cluster has no such topic. */
+export async function describeTopicPartitions(admin: Admin, topic: string): Promise<number | undefined> {
+  const topics = await admin.listTopics();
+  if (!topics.includes(topic)) {
+    return undefined;
+  }
+  const { topics: metadata } = await admin.fetchTopicMetadata({ topics: [topic] });
+  return metadata.find((entry) => entry.name === topic)?.partitions.length ?? 0;
+}
+
+/** A consumer group as the broker describes it: its state and the topics each member subscribes to. */
+export interface ConsumerGroupDescription {
+  readonly groupId: string;
+  /** Kafka's group state, for example Stable, Empty, Dead (a group that does not exist), PreparingRebalance. */
+  readonly state: string;
+  /** One entry per active member; `topics` is undefined when its subscription could not be decoded. */
+  readonly members: readonly { readonly clientId: string; readonly topics: readonly string[] | undefined }[];
+}
+
+export async function describeConsumerGroup(admin: Admin, groupId: string): Promise<ConsumerGroupDescription> {
+  const { groups } = await admin.describeGroups([groupId]);
+  const group = groups.find((entry) => entry.groupId === groupId);
+  if (group === undefined) {
+    return { groupId, state: 'Dead', members: [] };
+  }
+  return {
+    groupId,
+    state: group.state,
+    members: group.members.map((member) => ({ clientId: member.clientId, topics: subscribedTopics(member.memberMetadata) })),
+  };
+}
+
+/** The consumer protocol's member metadata names the subscribed topics (any client that speaks the consumer protocol). */
+function subscribedTopics(metadata: Buffer): string[] | undefined {
+  try {
+    const decoded = AssignerProtocol.MemberMetadata.decode(metadata);
+    return decoded === null ? undefined : [...decoded.topics];
+  } catch {
+    return undefined;
+  }
+}
+
 export async function fetchGroupLag(admin: Admin, groupId: string, topic: string): Promise<GroupLag> {
   const [ends, committed] = await Promise.all([admin.fetchTopicOffsets(topic), admin.fetchOffsets({ groupId, topics: [topic] })]);
   const partitions = committed.find((entry) => entry.topic === topic)?.partitions ?? [];
@@ -125,12 +167,13 @@ export class LagTimeoutError extends Error {
  */
 export async function waitForZeroLag(
   admin: Admin,
-  options: { groupId: string; topic: string; timeoutMs: number; pollMs?: number; clock?: WallClock; isAborted?: () => boolean },
+  options: { groupId: string; topic: string; timeoutMs: number; pollMs?: number; clock?: WallClock; isAborted?: () => boolean; signal?: AbortSignal },
 ): Promise<{ waitedMs: number; polls: number }> {
   const clock = options.clock ?? systemClock;
   const started = clock.now();
   let polls = 0;
   for (;;) {
+    options.signal?.throwIfAborted();
     const lag = await fetchGroupLag(admin, options.groupId, options.topic);
     polls += 1;
     if (lag.total === 0) {

@@ -16,5 +16,6 @@ module.exports = {
     '^@dataforge/validation$': '<rootDir>/packages/validation/src/index.ts',
     '^@dataforge/targets$': '<rootDir>/packages/targets/src/index.ts',
     '^@dataforge/kafka$': '<rootDir>/packages/kafka/src/index.ts',
+    '^@dataforge/execution$': '<rootDir>/packages/execution/src/index.ts',
   },
 };

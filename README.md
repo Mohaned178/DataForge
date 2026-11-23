@@ -10,9 +10,9 @@ The value is not the generated data. It is finding data-processing bugs in a rep
 
 > **Status:** Milestones 1 (deterministic simulation core + CLI), 2 (chaos delivery planner), 3
 > (validation engine + reference targets, offline end to end), 4 (Kafka delivery + out-of-process
-> target), 5 (event-time windows and late data) and 6 (persistence with PostgreSQL + Prisma, and
-> the API foundation with NestJS) of 10 are approved. Next: Milestone 7, test executions through
-> the API. See [docs/ROADMAP.md](docs/ROADMAP.md).
+> target), 5 (event-time windows and late data), 6 (persistence with PostgreSQL + Prisma, and the
+> API foundation with NestJS) and 7 (test executions through the API) of 10 are approved. See
+> [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Requirements
 
@@ -150,6 +150,25 @@ The four files (`events.jsonl`, `expected-state.json`, `scenario.resolved.json`,
 downloaded into one directory form a run directory that `dataforge verify` and every other command
 accept. Endpoints and tables: [docs/data-formats.md](docs/data-formats.md).
 
+A test execution runs the whole test of a stored run through the API: register a chaos profile, plan
+the faulty delivery, deliver it to a target, validate the target's state. The files are the ones
+`dataforge chaos plan`, `deliver` and `validate --report` write for the same inputs:
+
+```powershell
+$profile = Invoke-RestMethod -Method Post -Uri "$api/chaos-profiles" -ContentType 'application/json' -InFile chaos-profiles\spec-example.json
+$body = @{ runId = $run.id; chaosProfileId = $profile.id; chaosSeed = 7; target = @{ type = 'reference'; name = 'naive' } } | ConvertTo-Json -Depth 5
+$execution = Invoke-RestMethod -Method Post -Uri "$api/executions" -ContentType 'application/json' -Body $body
+Invoke-RestMethod "$api/executions/$($execution.id)"                         # queued, running, then completed with a verdict
+Invoke-RestMethod "$api/executions/$($execution.id)/report"                  # FAIL, counts by category, root causes
+(Invoke-RestMethod "$api/executions/$($execution.id)/findings?category=double-processing").findings
+(Invoke-RestMethod "$api/executions/$($execution.id)/attempts?aggregateId=ord_000045").attempts
+```
+
+The target can also be `{type: "reference", name: "correct", transport: "kafka"}` (a new topic and
+the consumer process), or your own pipeline: `{type: "external", topic: "...", groupId: "..."}`.
+DataForge then produces to your topic, waits until your consumer group has committed every record,
+and validates the state your pipeline submits with `POST /executions/:id/actual-state`.
+
 ## Development
 
 ```powershell
@@ -170,6 +189,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verification\milesto
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verification\milestone-4.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verification\milestone-5.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verification\milestone-6.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verification\milestone-7.ps1
 ```
 
 ## Milestone workflow (Claude Code)
@@ -192,6 +212,7 @@ packages/chaos         @dataforge/chaos: chaos delivery planner (no I/O, no fram
 packages/validation    @dataforge/validation: expected-vs-actual validation and root-cause hints (no I/O)
 packages/targets       @dataforge/targets: reference targets and the in-memory transport (no I/O)
 packages/kafka         @dataforge/kafka: Kafka record contract, plan executor, lag, consumer runner
+packages/execution     @dataforge/execution: the steps of a test execution, shared by the CLI and the API
 apps/cli               @dataforge/cli: the dataforge command
 apps/consumer          @dataforge/consumer: the reference consumer as a standalone process
 apps/api               @dataforge/api: the HTTP API (NestJS, Prisma, PostgreSQL)
@@ -210,6 +231,6 @@ docs/                  specification, architecture, roadmap, data formats, manua
 - [Architecture](docs/ARCHITECTURE.md)
 - [Data formats](docs/data-formats.md): scenario, events, expected state, manifest, chaos profile,
   delivery plan and summary, actual state, target run, Kafka record and logs, validation report,
-  database tables and HTTP API
+  database tables and HTTP API (runs, chaos profiles, test executions)
 - [Roadmap](docs/ROADMAP.md)
 - [Architecture decision records](docs/adr/)

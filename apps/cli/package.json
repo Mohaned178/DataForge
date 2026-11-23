@@ -14,8 +14,8 @@
   },
   "dependencies": {
     "@dataforge/chaos": "workspace:*",
-    "@dataforge/consumer": "workspace:*",
     "@dataforge/core": "workspace:*",
+    "@dataforge/execution": "workspace:*",
     "@dataforge/kafka": "workspace:*",
     "@dataforge/targets": "workspace:*",
     "@dataforge/validation": "workspace:*",

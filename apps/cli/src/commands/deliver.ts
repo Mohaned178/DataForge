@@ -1,15 +1,14 @@
 import { rmSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
-import { serializeActualState, serializeActualWindows } from '@dataforge/core';
+import { DELIVERY_FILES, deliverInProcess } from '@dataforge/execution';
 import { BrokerListError, DEFAULT_BROKERS, parseBrokers, type Speed } from '@dataforge/kafka';
-import { REFERENCE_TARGETS, createReferenceTarget, deliverInMemory, type ReferenceTargetName } from '@dataforge/targets';
+import { REFERENCE_TARGETS, type ReferenceTargetName } from '@dataforge/targets';
 import { EXIT_OK, UsageError, type CliIo } from '../cli-io';
-import { DELIVERY_FILES, buildTargetRun } from '../delivery-directory';
 import { printDeliveryHeader, printDeliveryOutcome, writeTargetRun, type DeliveryInputs, type KafkaOptions } from '../delivery-output';
 import { readPlanForRun } from '../plan-directory';
 import { prepareOutputDirectory, readIntactCanonicalLog, readManifest, samePath, writeRunFile } from '../run-directory';
-import { deliverThroughKafka } from './deliver-kafka';
+import { deliverKafka } from './deliver-kafka';
 
 export const TRANSPORTS = ['memory', 'kafka'] as const;
 export type Transport = (typeof TRANSPORTS)[number];
@@ -86,24 +85,11 @@ export function runDeliver(args: readonly string[], io: CliIo): number | Promise
     windowing: profile.windowing,
     typed: { run: values.run, plan: values.plan, out: values.out },
   };
-  return kafkaOptions === undefined ? deliverInProcess(inputs, io) : deliverThroughKafka(inputs, kafkaOptions, io);
+  return kafkaOptions === undefined ? deliverInMemory(inputs, io) : deliverKafka(inputs, kafkaOptions, io);
 }
 
-function deliverInProcess(inputs: DeliveryInputs, io: CliIo): number {
-  const target = createReferenceTarget(inputs.targetName, inputs.windowing === undefined ? {} : { windowing: inputs.windowing });
-  const result = deliverInMemory({ events: inputs.events, attempts: inputs.attempts, target });
-  const actualStateText = serializeActualState(result.actualState);
-  const actualWindowsText = result.windows === undefined ? undefined : serializeActualWindows(result.windows);
-  const targetRun = buildTargetRun({
-    target,
-    manifest: inputs.manifest,
-    summaryFile: inputs.summaryFile,
-    delivery: { messages: result.messages, distinctEvents: result.distinctEvents, redeliveries: result.redeliveries, failedAttempts: result.failedAttempts },
-    counters: result.counters,
-    parkedEventIds: result.parkedEventIds,
-    actualStateText,
-    ...(inputs.windowing === undefined || actualWindowsText === undefined ? {} : { windows: { windowing: inputs.windowing, actualWindowsText } }),
-  });
+function deliverInMemory(inputs: DeliveryInputs, io: CliIo): number {
+  const { target, targetRun, actualStateText, actualWindowsText } = deliverInProcess(inputs);
   writeRunFile(inputs.outDirectory, DELIVERY_FILES.actualState, actualStateText);
   if (actualWindowsText !== undefined) {
     writeRunFile(inputs.outDirectory, DELIVERY_FILES.actualWindows, actualWindowsText);

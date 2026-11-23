@@ -14,7 +14,7 @@ whenever implementation changes the plan. The workflow is driven by the `/datafo
 | 4 | Kafka delivery + out-of-process target | **Approved 2026-11-22** |
 | 5 | Event-time windows and late data | **Approved 2026-11-22** |
 | 6 | Persistence (PostgreSQL + Prisma) + API foundation (NestJS) | **Approved 2026-11-23** |
-| 7 | Test executions through the API | Planned |
+| 7 | Test executions through the API | **Approved 2026-11-23** |
 | 8 | Web UI: run history and report explorer | Planned |
 | 9 | Web UI: configure and launch + Playwright end-to-end | Planned |
 | 10 | Hardening and scale | Planned |
@@ -788,11 +788,176 @@ kept free of NestJS and Prisma). Self-check: `scripts/verification/milestone-6.p
 
 ## Milestone 7: Test executions through the API
 
-Chaos profiles, test executions, delivery attempts, validation reports and findings, persisted and
-queryable; an in-process execution runner with recovery of interrupted executions after restart.
-An execution can also target an external consumer group (D-4.3): DataForge produces to Kafka, waits
-for zero lag on the user's consumer group, and validates the actual state the user's pipeline
-reports.
+**Objective.** Run the whole test through the API: register a chaos profile, start a test execution
+of a stored run (plan the faulty delivery, deliver it to a target, validate the target's state), follow
+it, and query what happened: every delivery attempt, the verdict, every finding with its causes. The
+files an execution produces are byte-identical to `dataforge chaos plan`, `deliver` and `validate
+--report` for the same inputs. An execution can also test the user's own pipeline (D-4.3): DataForge
+produces to the user's Kafka topic, waits for zero lag on the user's consumer group, and validates the
+actual state the user submits.
+
+**Included.**
+
+- **`@dataforge/execution`** (new package; the test-execution steps shared by the CLI and the API):
+  - the step formats, moved from the CLI unchanged: the delivery summary file (`delivery-summary.json`,
+    schema and builder), the target run (`target-run.json`), the validation report
+    (`validation-report.json`, `buildValidationReport`);
+  - `planExecution` (plan + the three plan files), `deliverInProcess` (in-memory transport + target run),
+    `validateExecution` (expected windows, validation, report);
+  - Kafka delivery, moved from the CLI: topic, consumer process, executor, zero lag, finish, the
+    delivery log and `kafka-run.json`; and new, delivery to an **external consumer group**: the topic
+    must exist, the group must have an active member and zero lag before the first record, completion
+    is zero lag after the last one, and there is no consumer process.
+  - The CLI's `chaos plan`, `deliver` (both transports) and `validate` use it; their output is unchanged.
+- **Chaos profiles in the API**, like scenarios: `POST /chaos-profiles` (body = a chaos profile file, as
+  in `chaos-profiles/`; version 1), `GET /chaos-profiles`, `GET /chaos-profiles/:id`, `POST
+  /chaos-profiles/:id/versions` (a new immutable version, or the identical one), `GET
+  /chaos-profiles/:id/versions/:version`. Validated by the chaos `chaosProfileSchema`, so the API reports
+  the same paths as the CLI, the loss rule included.
+- **Test executions:**
+  - `POST /executions` `{ runId, chaosProfileId, chaosProfileVersion?, chaosSeed, target, timeoutSeconds? }`,
+    `202` with a queued execution. `target` is `{ type: "reference", name: "correct"|"naive",
+    transport?: "memory"|"kafka", partitions?, speed? }` or `{ type: "external", topic, groupId, speed? }`.
+    The run must have succeeded (`409` otherwise).
+  - Lifecycle `queued` → `running` → `completed` (with a verdict `PASS`/`FAIL`) or `failed` (with the
+    error); an external execution waits in `awaiting_actual_state` after its delivery.
+  - `POST /executions/:id/actual-state` `{ actualState, actualWindows? }` (the files a pipeline writes, in
+    the Milestone 3 and 5 formats): validated with the paths of each problem, then validated against the
+    run in the request; `409` unless the execution awaits it.
+  - `GET /executions` (history, newest first; filters `runId`, `chaosProfileId`, `status`, `verdict`;
+    paging), `GET /executions/:id`, `GET /executions/:id/attempts` (the delivery plan with the real Kafka
+    outcome of each attempt; filters `eventId`, `aggregateId`, `kind`, `fault`, `plannedOutcome`,
+    `fromSequence`, `limit`), `GET /executions/:id/report` (verdict, counts, root causes),
+    `GET /executions/:id/findings` and `/window-findings` (filters `category`, `entityType`, `entityId`;
+    paging), `GET /executions/:id/files/<name>` (`delivery-plan.jsonl`, `chaos-profile.resolved.json`,
+    `delivery-summary.json`, `actual-state.json`, `actual-windows.json`, `target-run.json`,
+    `validation-report.json`, and for Kafka `kafka-run.json`, `delivery-log.jsonl`; exact bytes, checked).
+- **Persistence** (one migration): `chaos_profile`, `chaos_profile_version` (immutable), `test_execution`,
+  `delivery_attempt` (one row per planned attempt, plus its Kafka outcome), `execution_file` (the JSON
+  documents with their SHA-256), `validation_report`, `validation_finding`, `window_finding`. Attempts,
+  findings and reports are immutable once written.
+- **In-process execution runner**, one execution at a time, beside the run runner (the queue mechanics
+  shared). A reference-target execution writes everything and `completed` in one transaction. On start-up,
+  queued executions are processed and reference executions left `running` are processed again from
+  scratch (deterministic; a new Kafka topic); an external execution left `running` becomes `failed`,
+  because the user's pipeline may already have consumed part of the stream.
+- **Configuration:** `KAFKA_BROKERS` (Kafka executions; Kafka is not needed to start the API) and
+  `EXECUTION_WORK_DIR` (consumer output and Kafka client logs of each Kafka execution). JSON bodies up to
+  64 MB (an actual state of the specification-sized scenario).
+
+**Architectural decisions** (ADR-0012).
+
+| Question | Options | Choice |
+| --- | --- | --- |
+| Where the execution steps live | the API runs the CLI as a child process; copy the steps into the API; a shared package | **A new `@dataforge/execution` package.** Today the steps live in CLI commands mixed with file and console I/O. A child process would make the database a copy of files and errors a parsing problem; a copy would drift. One package means "same inputs, same bytes" holds by construction, and the equivalence tests prove it. It cannot be `@dataforge/kafka`: it starts the consumer process, and `@dataforge/consumer` depends on `@dataforge/kafka`. |
+| Chaos profiles | the profile document inside each execution request; named profiles with immutable versions | **Named profiles with immutable versions**, exactly like scenarios (ADR-0011): an execution names a version, so its history stays readable, and two documents that resolve to the same settings are one version. |
+| How an execution is stored | the step files as text; rows for what is queried, documents for the rest, files rebuilt and checked | **Rows and documents, files rebuilt and checked** (the ADR-0011 rule): attempts and findings are rows (queried by event, aggregate, fault, category, entity), the other outputs are JSONB documents with the SHA-256 recorded when they were made; a download rebuilds each file and refuses to send it when it does not match. |
+| When it is written | step by step; at the end in one transaction | **At the end, in one transaction**, like runs: an execution is complete or has no results, so recovery is "run it again". An external execution writes its plan and delivery when it starts waiting, and its report when the state arrives. |
+| The reference consumer through Kafka | run the target in the API process; fork the consumer process | **Fork the consumer process**, as the CLI does: the target still knows only Kafka, and the API and CLI share one code path. |
+| External actual state | DataForge reads a file the pipeline writes; DataForge fetches it from a URL; the user submits it | **Submitted** (`POST /executions/:id/actual-state`): it works for any pipeline and any machine, needs no file path or endpoint convention, and keeps the API the only interface. A pull adapter can be added later. |
+| External topic and group | DataForge creates a topic per execution; the user's existing topic | **The user's topic, which must exist**, with checks before the first record: the group has an active member (otherwise nothing would ever reach zero lag) and zero lag (records already waiting could not be told apart). Completion is zero lag after the last record, as in Milestone 4. |
+| Recovery of an external execution | deliver again; fail it | **Fail it** with the reason: DataForge cannot reset the user's pipeline, and a second delivery would show up as duplicates. |
+| Status and verdict | one field (`passed`/`failed`/`error`); two fields | **Two fields.** The status says whether the execution ran to the end; the verdict says whether the target was right. `failed` with an error is an execution that could not complete (Kafka down, an invalid submission is refused with `400` and changes nothing). |
+
+**Dependencies.** `@dataforge/core` (run files, expected windows, actual-state and actual-windows
+contracts, `canonicalJson`). `@dataforge/chaos` (`chaosProfileSchema`, `chaosProfileHash`,
+`planDelivery`, `serializeDeliveryPlan`, `deliveryAttemptSchema`). `@dataforge/targets` (reference
+targets, `deliverInMemory`). `@dataforge/validation` (`validate`). `@dataforge/kafka` (executor, lag,
+client). `@dataforge/consumer` (the process). CLI: `chaos-plan.ts`, `deliver.ts`, `deliver-kafka.ts`,
+`consumer-process.ts`, `delivery-directory.ts`, `plan-directory.ts`, `validate.ts`. API (Milestone 6):
+the run runner, stored runs (events rebuilt and checked), the Prisma module. No new third-party
+dependency.
+
+**Code and documentation changes.** New `packages/execution`; the CLI's step code moved there; new API
+modules `chaos-profiles` and `executions`; a shared background queue for runs and executions; one
+migration; API configuration (`KAFKA_BROKERS`, `EXECUTION_WORK_DIR`, body limit); ESLint determinism
+guard for the pure parts of `@dataforge/execution`; Jest mapping; integration support; ADR-0012;
+`data-formats.md` (tables, API resources, the external `kafka-run.json`); `ARCHITECTURE.md`; README;
+manual verification guide and self-check.
+
+**Automated tests.**
+
+- Unit (`pnpm test`, no infrastructure): every existing CLI test and golden hash unchanged after the move;
+  execution request schemas (target union and defaults, Kafka-only options, topic and group names, seed
+  rules, unknown fields), chaos-profile requests, configuration (`KAFKA_BROKERS`, `EXECUTION_WORK_DIR`);
+  attempt and finding rows to documents and back (the rebuilt plan and report are byte-identical); the
+  external pre-checks on described groups and lags; the execution runner with in-memory collaborators
+  (status order, a failure ends `failed`, an external execution waits, recovery: queued processed,
+  reference requeued, external failed, awaiting untouched, claimed once).
+- Integration (`pnpm test:integration`, real PostgreSQL and Kafka): chaos profiles (create, invalid with
+  paths and the loss rule, duplicate name, new and identical versions); execution lifecycle; `409` for a
+  run that has not succeeded; **equivalence**: for the small scenario and several profiles (`none`,
+  `spec-example`, `lossy`, `late-data`) and both targets, the files of an in-memory execution are
+  byte-identical to the CLI's `chaos plan` + `deliver` + `validate --report`; the same through Kafka for a
+  subset; the specification-sized scenario once; attempt, finding and window-finding queries; a modified
+  attempt or finding row makes the download fail with an integrity error; recovery after a restart; an
+  external pipeline (a separately started consumer process on its own topic and group): `awaiting_actual_state`,
+  submission, report equal to the CLI's validation of the same state; external pre-checks (missing topic,
+  no active member) and submission errors; Kafka unreachable ends the execution `failed` with the command to
+  start it.
+
+**Acceptance criteria.**
+
+- A chaos profile file posted to the API becomes version 1; an invalid one is rejected with `400` and
+  the path of each problem; a changed definition is a new immutable version, an identical one returns the
+  existing version.
+- `POST /executions` answers `202` at once; the execution moves `queued` → `running` → `completed` with
+  a verdict, or `failed` with the error; it refuses a run that has not succeeded.
+- For the same run, profile, chaos seed and target, the downloaded plan, delivery and report files are
+  byte-identical to `dataforge chaos plan`, `deliver` and `validate --report`, in memory and through Kafka.
+- Every delivery attempt is stored and can be queried by event, aggregate, kind, fault and outcome, with
+  partition and offset for Kafka; every finding and window finding can be queried by category and entity.
+- A modified stored attempt or finding is never exported: the download fails with an integrity error.
+- An external execution produces to the user's topic, waits for zero lag on the user's group, waits for
+  the submitted state and validates it; it fails early, with the reason, when the topic does not exist or
+  the group has no active member.
+- Executions survive an API restart: queued ones run, interrupted reference executions run again,
+  interrupted external ones are failed with the reason, waiting ones still accept their state.
+- `pnpm check` needs no infrastructure; the CLI's outputs and golden hashes are unchanged.
+
+**Manual verification.** `docs/manual-verification/milestone-7.md` (MV-7.1 to MV-7.17: install and checks;
+services, the migration and the integration suite; start the API and generate a run; chaos profiles
+(register, invalid and duplicate, versions); a passing execution; a failing execution with its report,
+findings and causes; the same bytes as the CLI; an order's canonical timeline next to its delivery timeline;
+windows and late data; an execution through Kafka; an external pipeline; external failures; invalid
+execution requests; a tampered attempt or finding; restart recovery; history; the determinism guard).
+Self-check: `scripts/verification/milestone-7.ps1` (own database `dataforge_selfcheck`, own API on port
+3107, own work directory), 17 of 17 cases passing in PowerShell 7.6 and 16 of 16 (plus MV-7.1 skipped by
+`-SkipInstall`) in Windows PowerShell 5.1 on 2026-11-23, with Docker Desktop and the Compose services. The
+guide's command blocks were run once, literally, in one Windows PowerShell 5.1 session: the API and the
+pipeline ran as background processes and were stopped by killing them, because a background process cannot
+receive Ctrl+C, so the "interrupted by the stop" log line of MV-7.15 was not observed there (the unit test of
+the runner covers the stop).
+
+**Implementation notes** (changes to the plan above, with the reason).
+
+- The steps moved from the CLI into `@dataforge/execution` without a change of output: every CLI test and
+  golden hash passes before and after, and the integration suite compares the API's files with the CLI's byte
+  for byte (in memory and through Kafka).
+- An execution is requested for one planner version and refused (failed with the reason) by a runner of
+  another, so a stored execution never mixes plans from two planners (ADR-0012, decision 8).
+- A stop reaches the delivery in progress (an abort signal now goes to the executor and the lag wait) and
+  leaves the execution `running` for the next start, so a stop is never recorded as a failure.
+- The report of an external execution has `target: null`: no delivery log recorded what the pipeline
+  received. It is otherwise the report `dataforge validate --plan` gives for the same file (MV-7.11: equal
+  checksum).
+- The guide's first draft printed nested objects after a table, which PowerShell shows as blank lines; the
+  lines now end in `| Format-List`.
+- Dry-run values worth knowing: the spec example (chaos seed 7) plans 486 attempts for the small scenario
+  (14 duplicates); the naive target fails it with 48 findings, all explained; `late-data` gives 19 findings,
+  13 of them window findings; an execution through Kafka takes about half a second, a paced one
+  (`speed 5000`) about 35 s.
+
+**Product-owner decisions** (2026-11-23, the recommendations accepted):
+
+- D-7.1: the external pipeline's state is submitted (`POST /executions/:id/actual-state`), not read from a
+  file or fetched from a URL. It works for any pipeline on any machine and keeps the API the only
+  interface; a pull adapter can be added later without changing the submission (ADR-0012, decision 6).
+- D-7.2: an external execution interrupted by an API stop is failed with the reason, not delivered again.
+  DataForge cannot reset the user's pipeline, and a second delivery would arrive as duplicates (ADR-0012,
+  decision 8).
+
+**Approved** 2026-11-23.
 
 ## Milestone 8: Web UI: run history and report explorer
 
@@ -830,6 +995,9 @@ None at the moment.
 | Generation runs on the API's event loop. | The API answers nothing while a large run is simulated (about 0.6 s for the specification-sized scenario, much longer at the scenario limits). | Spec 5: no worker threads before profiling proves the need; profile in Milestone 10. |
 | A run download is built in memory. | About 6 MB for the specification-sized run; far more at the scenario limits. | Streaming the export is a Milestone 10 profiling item. |
 | One API process per database is assumed. | A second API on the same database would requeue the first one's running runs on start-up. | Documented (ADR-0011); a lease or heartbeat on `running` runs if several instances are ever needed. |
+| An execution plans, delivers in memory and validates on the API's event loop. | The API answers nothing else meanwhile; not measured at the specification's size through the API. | Spec 5: no worker threads before profiling; Kafka delivery is asynchronous. Profile in Milestone 10 (ADR-0012). |
+| An external pipeline must commit offsets after handling a record. | Zero lag would not mean "done"; its state could be incomplete when submitted. | Documented with the external API; DataForge checks for an active member and zero lag before the first record (ADR-0012, decision 7). |
+| Execution work directories and Kafka topics accumulate. | Disk use grows with every Kafka execution. | Kept on purpose for inspection (D-4.2); `docker compose down` removes the topics, the work directories are removed by hand. A clean-up command is a Milestone 10 candidate. |
 | Docker-backed checks need Docker Desktop running. | Without it, `deliver --transport kafka`, the API and `pnpm test:integration` cannot run (exit code 3 and a clear message, never a silent pass). | `pnpm check` needs no Docker; CI runs the integration suite against the Compose services (Kafka and PostgreSQL) on every push. |
 | Root-cause hints rely on a hand-written dependency model of the e-commerce domain. | New event types could leave findings under-explained (reported as "not explained by delivery"). | ADR-0008 names the rule; the end-to-end tests assert that every naive finding is explained under four profiles and on the spec-sized scenario, so a gap shows up as a failing test. |
 | The in-memory transport ignores wall-clock time (only order matters). | A user's pipeline that uses wall-clock processing time cannot be tested offline. | The reference targets take processing time from the delivery clock (`scheduledDeliveryTimeMs` header), so windows are tested the same in process and through Kafka (ADR-0010). Kafka delivery can also play the plan in compressed wall-clock time (`--speed`). |

@@ -65,7 +65,7 @@ describe('the API process (apps/api/dist/main.js)', () => {
     await recreateDatabase(empty, { migrate: false });
     const result = await runNode(API_MAIN, [], { DATABASE_URL: empty, API_PORT: '0' }, workspace);
     expect(result.code).toBe(3);
-    expect(result.stderr).toMatch(/The database .*\/dataforge_test_unmigrated is not migrated \(pending: \d+_init\)/);
+    expect(result.stderr).toMatch(/The database .*\/dataforge_test_unmigrated is not migrated \(pending: \d+_init, \d+_test_executions\)/);
     expect(result.stderr).toMatch(/pnpm db:migrate/);
   });
 

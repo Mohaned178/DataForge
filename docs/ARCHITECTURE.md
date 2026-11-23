@@ -14,10 +14,11 @@ packages/
   validation/    @dataforge/validation   Expected-vs-actual comparison, invariants, root-cause hints (Milestone 3)
   targets/       @dataforge/targets      Reference target pipelines + in-memory transport (Milestone 3)
   kafka/         @dataforge/kafka        Kafka delivery: record contract, plan executor, lag, consumer runner (Milestone 4)
+  execution/     @dataforge/execution    The steps of a test execution, shared by the CLI and the API (Milestone 7)
 apps/
   cli/           @dataforge/cli          Command-line interface (Milestone 1)
   consumer/      @dataforge/consumer     The reference consumer as a standalone process (Milestone 4)
-  api/           @dataforge/api          HTTP API: NestJS + Prisma + PostgreSQL; scenarios, runs, run history (Milestone 6)
+  api/           @dataforge/api          HTTP API: NestJS + Prisma + PostgreSQL; scenarios, runs, chaos profiles, test executions (Milestones 6-7)
   web/           @dataforge/web          React + Vite (Milestones 8-9, planned)
 scenarios/                               Example scenario definitions
 chaos-profiles/                          Example chaos profiles
@@ -30,8 +31,9 @@ Dependency direction (enforced by package dependencies, plus ESLint for the four
 
 ```text
 apps/web            ──HTTP──▶ apps/api (planned)
-apps/api            ──▶ core, NestJS, Prisma ──▶ PostgreSQL
-apps/cli            ──▶ kafka, validation, targets, chaos, core   (starts apps/consumer as a child process)
+apps/api            ──▶ execution, kafka, validation, targets, chaos, core, NestJS, Prisma ──▶ PostgreSQL
+apps/cli            ──▶ execution, kafka, validation, targets, chaos, core
+packages/execution  ──▶ kafka, validation, targets, chaos, core   (starts apps/consumer as a child process)
 apps/consumer       ──▶ kafka, targets, core
 packages/kafka      ──▶ targets, chaos, core, kafkajs
 packages/validation ──▶ chaos (delivery attempts), core
@@ -51,8 +53,10 @@ system, network, process, NestJS, Prisma, Kafka or React modules, and may not ca
 `packages/kafka` is the one package allowed to import a Kafka client (only `client.ts` and
 `consumer-runner.ts` do); its record contract, executor, lag arithmetic, log formats and process
 protocol are held to the same rules, and the executor reads time only from an injected clock.
-`apps/api` is the one place that imports NestJS and Prisma; it builds run files only through
-`@dataforge/core`.
+`packages/execution` is held to the same rules except `kafka-delivery.ts` and `consumer-process.ts`,
+the two modules that talk to Kafka and start the consumer process. `apps/api` is the one place that
+imports NestJS and Prisma; it builds run files only through `@dataforge/core`, and plans, delivers and
+validates only through `@dataforge/execution`, the same functions the CLI calls.
 
 ## Inside `@dataforge/core`
 
@@ -105,7 +109,22 @@ receives from any transport: key `aggregateId`, the canonical event, attempt hea
 | `kafka/src/consumer-runner.ts` | `ConsumerRunner`: joins a group, decodes records, hands them to a `Target`, commits after each handled batch, keeps the processing log. |
 | `kafka/src/process-protocol.ts` | The IPC messages between the delivering process and the consumer process. |
 | `consumer/src/main.ts` | The consumer process: options, `ConsumerRunner` with a reference target, finish on IPC or Ctrl+C, output files. |
-| `cli/src/commands/deliver-kafka.ts` | Topic and group per execution, consumer process, executor, zero lag, finish, output files. |
+| `cli/src/commands/deliver-kafka.ts` | `deliver --transport kafka`: calls `deliverThroughKafka` (`@dataforge/execution`), writes the output files, prints. |
+
+## Inside `@dataforge/execution`
+
+The steps of a test execution (spec 3, steps 5 to 9), without any front end: the CLI reads and
+writes them as files, the API as rows. Same inputs, same bytes, whichever calls them.
+
+| Module | Responsibility |
+| --- | --- |
+| `plan-files.ts` | `planExecution`: the plan and its three files (`delivery-plan.jsonl`, `chaos-profile.resolved.json`, `delivery-summary.json` and its schema). |
+| `target-run.ts` | `target-run.json`: its schema and `buildTargetRun`. |
+| `delivered-state.ts` | `deliverInProcess` (in-memory transport into a reference target) and `deliveredStateFromConsumer` (the same result from the consumer process's files). |
+| `report.ts` | `validateExecution` (expected windows and validation) and `validation-report.json` (`buildValidationReport`). |
+| `kafka-delivery.ts` | `deliverThroughKafka`: to the reference consumer (new topic and group, the consumer process, executor, zero lag, finish) or to an external pipeline (the user's topic and group, checked first); `kafka-run.json`. |
+| `external-group.ts` | `externalPipelineProblem`: the checks before the first record to an external pipeline (topic exists, group active on it, zero lag). |
+| `consumer-process.ts` | `ConsumerProcess`: the reference consumer as a child process, its IPC protocol. |
 
 ## Inside `@dataforge/api`
 
@@ -126,6 +145,14 @@ uses, so a run downloaded from the API is a run directory the CLI accepts.
 | `src/runs/prisma-run-store.ts` | Run status in PostgreSQL: claim, complete (events by `unnest`, snapshot, manifest, one transaction), fail, requeue. |
 | `src/runs/event-rows.ts` | Canonical events to column arrays and back; a row that is no longer a canonical event is an integrity error. |
 | `scripts/recreate-database.js` | Drops and recreates a scratch database (`*_test`, `*_selfcheck`) and migrates it. |
+| `src/background/serial-queue.ts` | `SerialQueue`: work processed one item at a time, in order; shared by the run and execution runners. |
+| `src/runs/stored-run.ts` | `loadIntactRun`: a stored run for an execution, its events checked against the manifest and replayed. |
+| `src/chaos-profiles/` | Chaos profiles and immutable versions, like scenarios. |
+| `src/executions/execution-pipeline.ts` | The work of one execution: plan, deliver (memory, Kafka, external), validate, through `@dataforge/execution`. |
+| `src/executions/execution-runner.ts` | `ExecutionRunner`: one execution at a time, recovery on start-up, abort on stop. |
+| `src/executions/prisma-execution-store.ts` | Execution status and results in PostgreSQL: claim, complete, await the actual state, fail, recover; attempts by `unnest`. |
+| `src/executions/executions.service.ts` | Start, history, attempts, report, findings, submission of an external pipeline's state, files rebuilt and checked. |
+| `src/executions/attempt-rows.ts`, `report-rows.ts` | Attempts and findings to rows and back; a row that is no longer an attempt is an integrity error. |
 
 ## Data flow (Milestone 1)
 
@@ -271,6 +298,29 @@ GET /runs/:id/files/<name> ◀─ rebuild from rows with the core serializers,
                               compare with the manifest's checksum ─▶ exact bytes, or 500 Run Integrity Error
 ```
 
+## Data flow (Milestone 7)
+
+```text
+POST /chaos-profiles (a profile file) ── chaosProfileSchema ─▶ chaos_profile + chaos_profile_version 1
+POST /executions {runId, chaosProfileId, chaosSeed, target} ─▶ test_execution (queued) ─▶ 202
+                                                      │ ExecutionRunner (in process, one at a time)
+                                                      ▼
+   claim: queued ─▶ running
+   loadIntactRun: events from rows, checked against the manifest, replayed ─▶ expected state
+   planExecution ─▶ attempts + delivery-summary.json            (the same code as "dataforge chaos plan")
+   target reference/memory:  deliverInProcess                   (as "deliver")
+   target reference/kafka:   deliverThroughKafka ─▶ topic, consumer process, executor, zero lag
+   target external:          deliverThroughKafka ─▶ the user's topic (checked), executor, zero lag on the
+                             user's group ─▶ attempts + files stored, status awaiting_actual_state
+                                            POST /executions/:id/actual-state ─▶ validated in the request
+   validateExecution + buildValidationReport                    (as "validate --plan --report")
+   one transaction: delivery_attempt (unnest), execution_file, validation_report, findings, completed
+   (failure ─▶ failed + error; a stop leaves running ─▶ requeued on start-up, or failed if external)
+                                                      │
+GET /executions, /:id, /:id/attempts, /:id/report, /:id/findings, /:id/window-findings ◀─┤
+GET /executions/:id/files/<name> ◀─ rebuilt from rows and documents, compared with the recorded checksum
+```
+
 ## Key concepts
 
 - **Canonical event**: a business fact in the simulated world, identified by `eventId`, positioned
@@ -302,6 +352,12 @@ GET /runs/:id/files/<name> ◀─ rebuild from rows with the core serializers,
   definition; a stored run is one scenario version simulated with one seed by one engine version. Its
   canonical events are rows, never updated, and its files are rebuilt from them and checked against
   the checksums recorded when it was generated.
+- **Test execution**: one stored run tested under one chaos profile version and chaos seed, against
+  one target: a reference target (in memory or through Kafka) or an external pipeline. Its status
+  says whether it ran to the end; its verdict whether the target was right.
+- **External pipeline**: a consumer DataForge did not start, on the user's topic and consumer group.
+  DataForge produces the plan to the topic, waits for zero lag on the group, and validates the actual
+  state the user submits.
 - **Engine version**: `ENGINE_VERSION` names the generation algorithm. Any change in output for the
   same scenario and seed requires a version bump; the golden test enforces this.
 

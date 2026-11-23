@@ -1,8 +1,11 @@
 import 'reflect-metadata';
 import { Module, StandardSchemaValidationPipe, type DynamicModule, type INestApplication, type LoggerService, type LogLevel } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
+import type { NestExpressApplication } from '@nestjs/platform-express';
+import { ChaosProfilesModule } from './chaos-profiles/chaos-profiles.module';
 import { API_CONFIG, type ApiConfig } from './config';
 import { DatabaseModule } from './database/database.module';
+import { ExecutionsModule } from './executions/executions.module';
 import { HealthController } from './health/health.controller';
 import { RunsModule } from './runs/runs.module';
 import { ScenariosModule } from './scenarios/scenarios.module';
@@ -13,13 +16,16 @@ export class AppModule {
     return {
       module: AppModule,
       global: true,
-      imports: [DatabaseModule, ScenariosModule, RunsModule],
+      imports: [DatabaseModule, ScenariosModule, RunsModule, ChaosProfilesModule, ExecutionsModule],
       controllers: [HealthController],
       providers: [{ provide: API_CONFIG, useValue: config }],
       exports: [API_CONFIG],
     };
   }
 }
+
+/** The largest JSON body the API accepts (an actual state submitted by an external pipeline). */
+export const MAX_JSON_BODY = '64mb';
 
 export interface CreateApiOptions {
   readonly logger?: false | LoggerService | LogLevel[];
@@ -33,10 +39,12 @@ export interface CreateApiOptions {
  * the API tests, so both exercise the same application.
  */
 export async function createApiApplication(config: ApiConfig, options: CreateApiOptions = {}): Promise<INestApplication> {
-  const app = await NestFactory.create(AppModule.register(config), {
+  const app = await NestFactory.create<NestExpressApplication>(AppModule.register(config), {
     logger: options.logger ?? ['log', 'warn', 'error'],
     abortOnError: false,
   });
+  // The actual state of a specification-sized run is a few megabytes; Express's default limit is 100 kB.
+  app.useBodyParser('json', { limit: MAX_JSON_BODY });
   // Every body, query and path parameter with a Zod schema is validated; problems are listed by path.
   app.useGlobalPipes(new StandardSchemaValidationPipe());
   if (options.shutdownHooks ?? true) {

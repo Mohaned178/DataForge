@@ -68,6 +68,7 @@ model SimulationRun {
   scenarioVersion   ScenarioVersion        @relation(fields: [scenarioVersionId], references: [id], onDelete: Restrict)
   events            CanonicalEvent[]
   expectedState     ExpectedStateSnapshot?
+  executions        TestExecution[]
 
   @@index([scenarioVersionId, requestedAt])
   @@index([status, requestedAt])
@@ -105,4 +106,180 @@ model ExpectedStateSnapshot {
   run          SimulationRun @relation(fields: [runId], references: [id], onDelete: Cascade)
 
   @@map("expected_state_snapshot")
+}
+
+/// A named chaos profile. Its definitions live in immutable versions (Milestone 7).
+model ChaosProfile {
+  id        String                @id @default(uuid(7)) @db.Uuid
+  name      String                @unique
+  createdAt DateTime              @default(now()) @map("created_at") @db.Timestamptz(3)
+  versions  ChaosProfileVersion[]
+
+  @@map("chaos_profile")
+}
+
+/// One immutable chaos profile definition: the resolved profile (defaults filled in) and its hash.
+model ChaosProfileVersion {
+  id             String          @id @default(uuid(7)) @db.Uuid
+  chaosProfileId String          @map("chaos_profile_id") @db.Uuid
+  version        Int
+  profileHash    String          @map("profile_hash")
+  definition     Json            @db.JsonB
+  createdAt      DateTime        @default(now()) @map("created_at") @db.Timestamptz(3)
+  chaosProfile   ChaosProfile    @relation(fields: [chaosProfileId], references: [id], onDelete: Restrict)
+  executions     TestExecution[]
+
+  @@unique([chaosProfileId, version])
+  @@unique([chaosProfileId, profileHash])
+  @@map("chaos_profile_version")
+}
+
+enum ExecutionStatus {
+  queued
+  running
+  awaiting_actual_state
+  completed
+  failed
+
+  @@map("execution_status")
+}
+
+enum Verdict {
+  PASS
+  FAIL
+
+  @@map("verdict")
+}
+
+/// A test of one stored run under one chaos profile version and chaos seed, against one target.
+/// The status says whether the execution ran to the end; the verdict whether the target was right.
+model TestExecution {
+  id                    String              @id @default(uuid(7)) @db.Uuid
+  runId                 String              @map("run_id") @db.Uuid
+  chaosProfileVersionId String              @map("chaos_profile_version_id") @db.Uuid
+  chaosSeed             String              @map("chaos_seed")
+  plannerVersion        String              @map("planner_version")
+  /// The target as requested, defaults filled in: {type: "reference", name, transport, ...} or {type: "external", topic, groupId, ...}.
+  target                Json                @db.JsonB
+  status                ExecutionStatus     @default(queued)
+  error                 String?
+  requestedAt           DateTime            @default(now()) @map("requested_at") @db.Timestamptz(3)
+  startedAt             DateTime?           @map("started_at") @db.Timestamptz(3)
+  /// When the delivery ended; an external execution waits for its actual state from then on.
+  deliveredAt           DateTime?           @map("delivered_at") @db.Timestamptz(3)
+  finishedAt            DateTime?           @map("finished_at") @db.Timestamptz(3)
+  attemptCount          Int?                @map("attempt_count")
+  verdict               Verdict?
+  findingCount          Int?                @map("finding_count")
+  windowFindingCount    Int?                @map("window_finding_count")
+  /// Where the consumer output and Kafka client logs of a Kafka execution are (EXECUTION_WORK_DIR).
+  workDirectory         String?             @map("work_directory")
+  run                   SimulationRun       @relation(fields: [runId], references: [id], onDelete: Restrict)
+  chaosProfileVersion   ChaosProfileVersion @relation(fields: [chaosProfileVersionId], references: [id], onDelete: Restrict)
+  attempts              DeliveryAttempt[]
+  files                 ExecutionFile[]
+  report                ValidationReport?
+  findings              ValidationFinding[]
+  windowFindings        WindowFinding[]
+
+  @@index([runId, requestedAt])
+  @@index([chaosProfileVersionId, requestedAt])
+  @@index([status, requestedAt])
+  @@index([requestedAt])
+  @@map("test_execution")
+}
+
+/// One planned delivery attempt (a line of delivery-plan.jsonl) and, for Kafka, what really happened to it.
+model DeliveryAttempt {
+  executionId             String        @map("execution_id") @db.Uuid
+  deliverySequence        Int           @map("delivery_sequence")
+  attemptId               String        @map("attempt_id")
+  attemptNumber           Int           @map("attempt_number")
+  kind                    String
+  plannedOutcome          String        @map("planned_outcome")
+  scheduledDeliveryTimeMs BigInt        @map("scheduled_delivery_time_ms")
+  eventId                 String        @map("event_id")
+  eventSequence           Int           @map("event_sequence")
+  eventType               String        @map("event_type")
+  eventTimeMs             BigInt        @map("event_time_ms")
+  aggregateId             String        @map("aggregate_id")
+  aggregateVersion        Int           @map("aggregate_version")
+  derivedFrom             Json?         @map("derived_from") @db.JsonB
+  faults                  Json          @db.JsonB
+  /// The delivery-log.jsonl entry of a Kafka execution (sent or planned-failure); null in memory.
+  kafkaOutcome            String?       @map("kafka_outcome")
+  kafkaPartition          Int?          @map("kafka_partition")
+  kafkaOffset             String?       @map("kafka_offset")
+  dueAtMs                 Int?          @map("due_at_ms")
+  startedAtMs             Int?          @map("started_at_ms")
+  ackedAtMs               Int?          @map("acked_at_ms")
+  driftMs                 Int?          @map("drift_ms")
+  execution               TestExecution @relation(fields: [executionId], references: [id], onDelete: Cascade)
+
+  @@id([executionId, deliverySequence])
+  @@unique([executionId, attemptId])
+  @@index([executionId, eventId])
+  @@index([executionId, aggregateId, deliverySequence])
+  @@map("delivery_attempt")
+}
+
+/// A JSON file of an execution (delivery-summary.json, actual-state.json, target-run.json, ...) and the SHA-256 recorded when it was made.
+model ExecutionFile {
+  executionId String        @map("execution_id") @db.Uuid
+  name        String
+  document    Json          @db.JsonB
+  sha256      String
+  bytes       Int
+  execution   TestExecution @relation(fields: [executionId], references: [id], onDelete: Cascade)
+
+  @@id([executionId, name])
+  @@map("execution_file")
+}
+
+/// validation-report.json without its findings, which are rows; sha256 and bytes are those of the whole file.
+model ValidationReport {
+  executionId String        @id @map("execution_id") @db.Uuid
+  verdict     Verdict
+  document    Json          @db.JsonB
+  sha256      String
+  bytes       Int
+  execution   TestExecution @relation(fields: [executionId], references: [id], onDelete: Cascade)
+
+  @@map("validation_report")
+}
+
+/// One entity finding of a validation report, at its position in the report.
+model ValidationFinding {
+  executionId String        @map("execution_id") @db.Uuid
+  ordinal     Int
+  category    String
+  entityType  String        @map("entity_type")
+  entityId    String        @map("entity_id")
+  check       String
+  message     String
+  differences Json          @db.JsonB
+  causes      Json          @db.JsonB
+  execution   TestExecution @relation(fields: [executionId], references: [id], onDelete: Cascade)
+
+  @@id([executionId, ordinal])
+  @@index([executionId, category, ordinal])
+  @@index([executionId, entityType, entityId])
+  @@map("validation_finding")
+}
+
+/// One window finding of a validation report, at its position in the report's windows section.
+model WindowFinding {
+  executionId   String        @map("execution_id") @db.Uuid
+  ordinal       Int
+  category      String
+  windowStartMs BigInt        @map("window_start_ms")
+  windowEndMs   BigInt        @map("window_end_ms")
+  message       String
+  differences   Json          @db.JsonB
+  causes        Json          @db.JsonB
+  execution     TestExecution @relation(fields: [executionId], references: [id], onDelete: Cascade)
+
+  @@id([executionId, ordinal])
+  @@index([executionId, category, ordinal])
+  @@map("window_finding")
 }

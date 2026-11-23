@@ -1,0 +1,31 @@
+{
+  "name": "@dataforge/execution",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The steps of a test execution, shared by the CLI and the API: plan the faulty delivery, deliver it (in process, through Kafka to the reference consumer process, or to an external consumer group), validate the target's state, and the file formats of each step.",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\""
+  },
+  "dependencies": {
+    "@dataforge/chaos": "workspace:*",
+    "@dataforge/consumer": "workspace:*",
+    "@dataforge/core": "workspace:*",
+    "@dataforge/kafka": "workspace:*",
+    "@dataforge/targets": "workspace:*",
+    "@dataforge/validation": "workspace:*",
+    "zod": "4.6.7"
+  }
+}

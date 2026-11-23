@@ -92,4 +92,15 @@ export default defineConfig(
       'no-restricted-imports': ['error', coreForbiddenImports],
     },
   },
+  {
+    // @dataforge/execution: the step formats, planning, in-process delivery, validation and the
+    // external-pipeline checks are pure too. Only the Kafka delivery and the consumer process do I/O.
+    files: ['packages/execution/src/**/*.ts'],
+    ignores: ['packages/execution/src/kafka-delivery.ts', 'packages/execution/src/consumer-process.ts'],
+    rules: {
+      'no-restricted-properties': ['error', ...nondeterministicProperties],
+      'no-restricted-syntax': ['error', ...nondeterministicSyntax],
+      'no-restricted-imports': ['error', coreForbiddenImports],
+    },
+  },
 );

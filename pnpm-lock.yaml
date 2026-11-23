@@ -35,9 +35,24 @@ importers:
 
   apps/api:
     dependencies:
+      '@dataforge/chaos':
+        specifier: workspace:*
+        version: link:../../packages/chaos
       '@dataforge/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@dataforge/execution':
+        specifier: workspace:*
+        version: link:../../packages/execution
+      '@dataforge/kafka':
+        specifier: workspace:*
+        version: link:../../packages/kafka
+      '@dataforge/targets':
+        specifier: workspace:*
+        version: link:../../packages/targets
+      '@dataforge/validation':
+        specifier: workspace:*
+        version: link:../../packages/validation
       '@nestjs/common':
         specifier: 12.6.0
         version: 12.6.0(reflect-metadata@0.2.2)(rxjs@7.8.2)(supports-color@8.1.1)
@@ -84,12 +99,12 @@ importers:
       '@dataforge/chaos':
         specifier: workspace:*
         version: link:../../packages/chaos
-      '@dataforge/consumer':
-        specifier: workspace:*
-        version: link:../consumer
       '@dataforge/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@dataforge/execution':
+        specifier: workspace:*
+        version: link:../../packages/execution
       '@dataforge/kafka':
         specifier: workspace:*
         version: link:../../packages/kafka
@@ -126,6 +141,30 @@ importers:
 
   packages/core:
     dependencies:
+      zod:
+        specifier: 4.6.7
+        version: 4.6.7
+
+  packages/execution:
+    dependencies:
+      '@dataforge/chaos':
+        specifier: workspace:*
+        version: link:../chaos
+      '@dataforge/consumer':
+        specifier: workspace:*
+        version: link:../../apps/consumer
+      '@dataforge/core':
+        specifier: workspace:*
+        version: link:../core
+      '@dataforge/kafka':
+        specifier: workspace:*
+        version: link:../kafka
+      '@dataforge/targets':
+        specifier: workspace:*
+        version: link:../targets
+      '@dataforge/validation':
+        specifier: workspace:*
+        version: link:../validation
       zod:
         specifier: 4.6.7
         version: 4.6.7
