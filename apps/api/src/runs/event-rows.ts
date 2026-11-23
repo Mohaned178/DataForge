@@ -1,4 +1,4 @@
-import { canonicalEventSchema, type CanonicalEvent } from '@dataforge/core';
+import { versionedEventSchema, type CanonicalEvent } from '@dataforge/core';
 import { RunIntegrityError } from './run-integrity';
 
 /**
@@ -92,7 +92,7 @@ export function fromEventRow(row: StoredEventRow, runId: string): CanonicalEvent
     aggregateType: row.aggregateType,
     payload: row.payload,
   };
-  const result = canonicalEventSchema.safeParse(candidate);
+  const result = versionedEventSchema.safeParse(candidate);
   if (!result.success) {
     const issue = result.error.issues[0];
     const path = issue === undefined || issue.path.length === 0 ? '(event)' : issue.path.map(String).join('.');

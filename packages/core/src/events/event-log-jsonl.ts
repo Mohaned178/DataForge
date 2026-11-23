@@ -1,5 +1,6 @@
 import { canonicalJson } from '../serialization/canonical-json';
 import { canonicalEventSchema, type CanonicalEvent } from './canonical-event';
+import { EVENT_UPCASTERS, EventVersionError, upcastEventRecord, type EventUpcasters } from './upcast';
 
 export const BYTE_ORDER_MARK_CODE = 0xfeff;
 
@@ -25,9 +26,10 @@ export function serializeEventLog(events: readonly CanonicalEvent[]): string {
 
 /**
  * Parses and schema-validates a JSONL event log. A UTF-8 BOM and CRLF line endings are tolerated
- * on input; blank lines in the middle of the file are not.
+ * on input; blank lines in the middle of the file are not. Events written at an older schema version
+ * are upcast to the current one (see upcast.ts); a newer version is refused with both versions named.
  */
-export function parseEventLog(text: string): CanonicalEvent[] {
+export function parseEventLog(text: string, upcasters: EventUpcasters = EVENT_UPCASTERS): CanonicalEvent[] {
   const body = stripByteOrderMark(text);
   const lines = body.split('\n');
   if (lines[lines.length - 1] === '') {
@@ -45,7 +47,16 @@ export function parseEventLog(text: string): CanonicalEvent[] {
     } catch (error) {
       throw new EventLogParseError(lineNumber, `invalid JSON (${(error as Error).message})`);
     }
-    const result = canonicalEventSchema.safeParse(json);
+    let upcast: unknown;
+    try {
+      upcast = upcastEventRecord(json, upcasters);
+    } catch (error) {
+      if (error instanceof EventVersionError) {
+        throw new EventLogParseError(lineNumber, `schemaVersion: ${error.message}`);
+      }
+      throw error;
+    }
+    const result = canonicalEventSchema.safeParse(upcast);
     if (!result.success) {
       const issue = result.error.issues[0];
       const path = issue === undefined || issue.path.length === 0 ? '(event)' : issue.path.map(String).join('.');

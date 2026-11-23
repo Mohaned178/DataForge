@@ -116,6 +116,11 @@ export default defineConfig(
     languageOptions: { globals: { process: 'readonly', fetch: 'readonly', setTimeout: 'readonly', console: 'readonly' } },
   },
   {
+    // Plain Node scripts that drive the built product from outside (pnpm profile, pnpm demo:seed).
+    files: ['scripts/profile/*.mjs', 'scripts/demo/*.mjs'],
+    languageOptions: { globals: { process: 'readonly', fetch: 'readonly', setTimeout: 'readonly', console: 'readonly' } },
+  },
+  {
     // @dataforge/web runs in the browser and talks to the API over HTTP only: no engine, no Node, no
     // server framework, no database or Kafka client. Its response schemas (src/api) are the contract.
     files: ['apps/web/src/**/*.{ts,tsx}'],

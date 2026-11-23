@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { canonicalEventSchema, canonicalJson, simTimeToIso } from '@dataforge/core';
+import { canonicalJson, simTimeToIso, versionedEventSchema } from '@dataforge/core';
 import type { DeliveryMessage } from '@dataforge/targets';
 
 export const DELIVERY_RECORD_FORMAT = 'dataforge.delivery-record';
@@ -33,7 +33,7 @@ const ISO_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 const recordValueSchema = z.strictObject({
   format: z.literal(DELIVERY_RECORD_FORMAT),
   formatVersion: z.literal(DELIVERY_RECORD_FORMAT_VERSION),
-  event: canonicalEventSchema,
+  event: versionedEventSchema,
   eventTime: z.string().regex(ISO_INSTANT, 'expected an ISO-8601 UTC instant like 2026-01-01T00:00:00.000Z'),
 });
 

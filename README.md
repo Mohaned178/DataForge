@@ -12,8 +12,11 @@ The value is not the generated data. It is finding data-processing bugs in a rep
 > (validation engine + reference targets, offline end to end), 4 (Kafka delivery + out-of-process
 > target), 5 (event-time windows and late data), 6 (persistence with PostgreSQL + Prisma, and the
 > API foundation with NestJS), 7 (test executions through the API), 8 (web UI: run history and report
-> explorer) and 9 (web UI: configure and launch, with Playwright end-to-end tests) of 10 are approved. See
-> [docs/ROADMAP.md](docs/ROADMAP.md).
+> explorer) and 9 (web UI: configure and launch, with Playwright end-to-end tests) of 10 are approved.
+> Milestone 10 (hardening and scale: profiling at the scenario limits, event schema versioning and
+> upcasting, a checked Compose environment, the demo) is implemented and awaits approval; its manual
+> verification was waived at the product owner's request. See [docs/ROADMAP.md](docs/ROADMAP.md) and
+> [docs/performance.md](docs/performance.md).
 
 ## Requirements
 
@@ -21,6 +24,50 @@ The value is not the generated data. It is finding data-processing bugs in a rep
 - pnpm 11 (`corepack enable` or `npm install -g pnpm`)
 - Docker Desktop with Docker Compose: for the Kafka broker (`deliver --transport kafka`),
   PostgreSQL (the API) and `pnpm test:integration`; the CLI and `pnpm check` run without it
+
+## Try it with examples (PowerShell, about five minutes)
+
+DataForge runs on your machine (the API listens on 127.0.0.1 only and has no authentication, by design), so
+"the link" is this repository. From a clone, with Docker Desktop running:
+
+```powershell
+git clone https://github.com/Mohaned178/DataForge.git
+cd DataForge
+pnpm install
+pnpm build
+docker compose up -d --wait      # Kafka and PostgreSQL
+pnpm db:migrate                  # create the tables
+pnpm api                         # window 1: the API on http://127.0.0.1:3000 (leave it running)
+pnpm web                         # window 2: the web UI on http://127.0.0.1:5173 (leave it running)
+pnpm demo:seed                   # window 3: fill it with examples (about 15 seconds)
+```
+
+Then open <http://127.0.0.1:5173/executions>. `pnpm demo:seed` registers the example scenarios and chaos
+profiles, simulates two worlds (the small scenario, 472 events, and the specification's example size, 18,479
+events, both seed 42) and runs five tests. Open each one:
+
+| Test | Verdict | What to look at |
+| --- | --- | --- |
+| `correct` target, profile `none` | PASS | The baseline: 472 attempts, no faults, no findings. |
+| `naive` target, profile `spec-example` (5% delayed, 3% duplicated, 2% reordered; chaos seed 7) | FAIL, 48 findings, all explained | 8 `double-processing` (customers charged twice), 8 `status-mismatch` (orders in the wrong status), 14 `field-mismatch` and 18 `invariant-violation`. Open a finding: it names the delayed, duplicated or reordered event that caused it, and links to the order's canonical timeline next to its delivery timeline. |
+| `correct` target, same profile and seed | PASS | The same 486 attempts with the same faults, handled correctly: the faults are not the failure, the pipeline's handling is. |
+| `naive` target, profile `duplicates-only` | FAIL, 58 findings | Every duplicated payment is counted twice. |
+| `correct` target, profile `late-data` on the 18,479-event world (hourly windows, 10 minutes of allowed lateness) | FAIL, 160 window findings | Revenue and order counts per event-time window are short wherever an event arrived after its window closed; each window finding names the late event. |
+
+Then start your own test from the UI (`/executions/new`: pick a run, a chaos profile, a chaos seed and a
+target) or edit a scenario or profile (`/scenarios`, `/chaos-profiles`). The same worlds are available without
+Docker or the UI, from the command line:
+
+```powershell
+pnpm dataforge generate --scenario scenarios/ecommerce-small.json --seed 42 --out out/try
+pnpm dataforge chaos plan --run out/try --profile chaos-profiles/spec-example.json --chaos-seed 7 --out out/try-plan
+pnpm dataforge deliver --run out/try --plan out/try-plan --target naive --out out/try-naive
+pnpm dataforge validate --run out/try --actual out/try-naive/actual-state.json --plan out/try-plan
+```
+
+The last command exits with code 1 (findings) and prints the double charges and wrong statuses, each with the
+faulted events behind it. Change `--target naive` to `--target correct` and it passes. To test your own
+pipeline instead of the reference targets, see the HTTP API section (`target.type: "external"`).
 
 ## Quick start (PowerShell)
 
@@ -203,6 +250,8 @@ pnpm check       # all three (no Docker needed)
 pnpm web:dev     # the web UI with hot reload
 pnpm test:integration   # build, then the Kafka and PostgreSQL integration tests (needs docker compose up -d --wait)
 pnpm test:e2e           # build, then the Playwright end-to-end suite (needs docker compose up -d --wait and the browser)
+pnpm demo:seed          # fill a running API with example scenarios, profiles, runs and five tests
+pnpm profile --orders 100000 --customers 100000 --products 10000   # time and peak memory of every stage at the scenario limit
 ```
 
 Each milestone ships a manual verification guide (`docs/manual-verification/`) and a self-check that
@@ -250,6 +299,8 @@ compose.yaml           local Kafka broker (KRaft) and PostgreSQL
 scenarios/             example scenario definitions
 chaos-profiles/        example chaos profiles
 scripts/verification/  per-milestone self-checks (PowerShell 5.1 and 7)
+scripts/demo/          pnpm demo:seed: the examples of "Try it"
+scripts/profile/       pnpm profile: time and peak memory per stage at any size
 docs/                  specification, architecture, roadmap, data formats, manual verification, ADRs
 .claude/skills/        the /dataforge milestone workflow
 ```
@@ -263,4 +314,5 @@ docs/                  specification, architecture, roadmap, data formats, manua
   delivery plan and summary, actual state, target run, Kafka record and logs, validation report,
   database tables, HTTP API (scenarios, runs, chaos profiles, test executions, the two dry runs) and the web UI's routes
 - [Roadmap](docs/ROADMAP.md)
+- [Performance at the scenario limits](docs/performance.md): measured time and memory, and what was decided
 - [Architecture decision records](docs/adr/)

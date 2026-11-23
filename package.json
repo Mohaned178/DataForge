@@ -22,7 +22,9 @@
     "web": "pnpm --filter @dataforge/web run preview",
     "web:dev": "pnpm --filter @dataforge/web run dev",
     "clean": "pnpm -r clean",
-    "dataforge": "node apps/cli/dist/main.js"
+    "dataforge": "node apps/cli/dist/main.js",
+    "profile": "node scripts/profile/profile.mjs",
+    "demo:seed": "node scripts/demo/seed.mjs"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",

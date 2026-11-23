@@ -175,7 +175,7 @@ Test-Case 'MV-7.1' 'Install, build and run the automated checks' -Skip:$SkipInst
     foreach ($project in 'packages/core', 'packages/chaos', 'packages/targets', 'packages/validation', 'packages/kafka', 'packages/execution', 'apps/api', 'apps/consumer', 'apps/cli') {
         Assert-Match $check.Text "$project typecheck: Done" "$project type-checked"
     }
-    Assert-Match $check.Text 'Test Suites:\s+38 passed, 38 total' 'pnpm check suites'
+    Assert-Match $check.Text 'Test Suites:\s+40 passed, 40 total' 'pnpm check suites'
     Assert-Match $check.Text 'Tests:\s+451 passed, 451 total' 'pnpm check tests'
     $build = Invoke-Pnpm @('build')
     Assert-Exit $build 0 'pnpm build'

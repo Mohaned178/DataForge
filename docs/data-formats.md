@@ -65,7 +65,7 @@ Limits: 10,000 products, 100,000 customers, 100,000 orders, 20 lines per order, 
 | --- | --- |
 | `eventId` | Unique business identity: `evt_<aggregateId>_<aggregateVersion>`. Duplicated deliveries (Milestone 2) keep this value. |
 | `type` | One of the event types below. |
-| `schemaVersion` | Event schema version, currently `1`. Parsers reject versions they do not know. |
+| `schemaVersion` | Event schema version, currently `1`. A reader upcasts an older version to the current one when an upcaster for it exists, and refuses a newer one, naming both versions: `schemaVersion 2 is newer than the version this engine reads (1); upgrade DataForge to read this event`. See "Event schema versions" below. |
 | `sequence` | 1-based position in the canonical log. Contiguous. |
 | `eventTimeMs` | Event time: integer milliseconds since `manifest.simulation.epoch` (UTC). Not Unix time. |
 | `aggregateType` | `Product`, `Customer` or `Order`. |
@@ -85,6 +85,25 @@ Canonical order: `eventTimeMs`, then `aggregateId` (code-unit order), then `aggr
 | `OrderCancelled` | Order | `orderId`, `reason` (`CUSTOMER_REQUEST`, `PAYMENT_FAILED`) |
 | `ShipmentCreated` | Order | `orderId`, `shipmentId`, `carrier` (`STANDARD_POST`, `EXPRESS_COURIER`, `FREIGHT`) |
 | `ShipmentDelivered` | Order | `orderId`, `shipmentId` |
+
+### Event schema versions
+
+`schemaVersion` names the shape of the envelope and the payloads. Version 1 is the only one that has existed.
+When the shape changes, the engine's schema version goes up by one, and an **upcaster** (a pure function from a
+version-*n* record to a version-*n+1* record, `packages/core/src/events/upcast.ts`) is added for the old one. A
+reader applies one upcaster per step until the record is current, wherever it reads stored events: the JSONL
+log (`parseEventLog`), a `canonical_event` row and a Kafka record's `event`. Nothing on disk is rewritten, so the
+checksums in an old run's manifest still describe its files.
+
+| Record | Result |
+| --- | --- |
+| `schemaVersion` equal to the engine's | Read as is. |
+| Older, with an upcaster for each step | Upcast, then validated as a current event. |
+| Older, a step without an upcaster | Refused: `schemaVersion 0 is older than the version this engine reads (1), and no upcaster reads version 0`. |
+| Newer | Refused: `schemaVersion 2 is newer than the version this engine reads (1); upgrade DataForge to read this event`. |
+
+In `events.jsonl` the refusal carries the line (`events.jsonl line 3: schemaVersion: ...`); for a stored row it is
+a run integrity error naming the sequence; for a Kafka record it is the problem `value.event.schemaVersion: ...`.
 
 ### Order state machine
 

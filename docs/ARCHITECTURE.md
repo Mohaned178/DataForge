@@ -68,7 +68,7 @@ validates only through `@dataforge/execution`, the same functions the CLI calls.
 | `time/` | Simulation clock helpers: UTC parsing, simulation time to ISO conversion. |
 | `scenario/` | Scenario schema (Zod), defaults, cross-field validation, scenario hash, seed rules. |
 | `domain/` | Deterministic IDs and the order state machine (`ORDER_TRANSITIONS`), the single source of lifecycle rules. |
-| `events/` | Canonical event schemas, event drafts, canonical ordering, JSONL serialization. |
+| `events/` | Canonical event schemas, event drafts, canonical ordering, JSONL serialization, and schema versioning: `upcast.ts` brings a record written at an older `schemaVersion` to the current one (one pure upcaster per version step, none registered yet) and refuses a newer one by name. Every reader of stored events goes through it: the JSONL log, a database row, a Kafka record (ADR-0015). |
 | `generation/` | Catalog, customer and order lifecycle generators, plus `simulate()`. |
 | `rules/` | The business rule registry (`defineRule`, `ECOMMERCE_RULES`) and the state invariants (`ECOMMERCE_INVARIANTS`), which check a whole final state. |
 | `projection/` | World state, `applyEvent`, strict replay with log-integrity checks, expected-state output, and the actual-state contract a target reports (`parseActualState`). |

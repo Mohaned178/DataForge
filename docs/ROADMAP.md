@@ -17,7 +17,7 @@ whenever implementation changes the plan. The workflow is driven by the `/datafo
 | 7 | Test executions through the API | **Approved 2026-11-23** |
 | 8 | Web UI: run history and report explorer | **Approved 2026-11-23** |
 | 9 | Web UI: configure and launch + Playwright end-to-end | **Approved 2026-11-23** |
-| 10 | Hardening and scale | Planned |
+| 10 | Hardening and scale | **Awaiting manual verification** (waived at the product owner's request on 2026-11-23; not approved) |
 
 ## Why this order
 
@@ -1396,8 +1396,91 @@ What was run, and how (nothing here is claimed beyond it):
 
 ## Milestone 10: Hardening and scale
 
-Profiling at the scenario limits (100k orders), streaming generation and serialization if profiling
-calls for it, event schema versioning and upcasting, reproducible Compose environment, documentation.
+**Objective.** Find out whether DataForge holds at the scenario limits (100,000 orders), fix what the
+measurements call for and nothing else, make a change of the event schema a planned operation, and make the
+environment and the examples reproducible, so a new user can clone the repository and see a test fail and
+pass within minutes.
+
+**Included.**
+
+- **Profiling** (`pnpm profile`, `scripts/profile/`): every CLI stage (generate, verify, chaos plan, deliver,
+  validate) with wall time and the stage's own peak memory, and, with `--api`, the API's run, downloads and an
+  execution with the slowest `/health` answer during each (event-loop stalls). Measured at 5,000, 25,000 and
+  100,000 orders; the results and the decisions are in [docs/performance.md](performance.md).
+- **Event schema versioning and upcasting** (`@dataforge/core`, `events/upcast.ts`): `EVENT_UPCASTERS`
+  (empty: version 1 is the only schema), `upcastEventRecord`, `versionedEventSchema`, `EventVersionError`;
+  applied when a JSONL log, a database row or a Kafka record is read. A newer version than the engine reads, or
+  an older one with no upcaster, is an error that names the versions.
+- **A checked Compose environment**: a test (`apps/api/test/reproducible-environment.test.ts`, part of
+  `pnpm check`) for pinned images, health checks, `.env.example` against `compose.yaml`, the API's
+  configuration and the code's variables.
+- **The demo** (`pnpm demo:seed`, `scripts/demo/`): the example scenarios and profiles, two runs and five
+  executions with expected verdicts, through the public API; and a "Try it with examples" section in the README.
+- Documentation: ADR-0015, `docs/performance.md`, README, architecture, data formats, roadmap.
+
+**Architectural decisions** (ADR-0015).
+
+| Question | Options | Choice |
+| --- | --- | --- |
+| Streaming generation and serialization | stream now; only if profiling calls for it | **Not needed.** At the limit (455,251 events, a 139 MB log) every CLI stage peaks under 2 GB and takes 9 to 14 s. The API download must checksum the whole file before sending (ADR-0011), so streaming it means two database passes for a stall of seconds. |
+| Worker threads for the API | now; wait for the product owner | **Decision left open (D-10.1).** The API is unresponsive for 9.4 s while generating a run and 28.4 s while running an execution at the limit (0.3 to 1.0 s at the specification's size). A fix moves the pipeline out of the request path with its own database connection; it is not free, and the tool is single-user and local. |
+| Schema versioning | versioned Zod schemas per version; upcasting to one current shape; in-place data migration | **Upcasting**, at the three read boundaries, one pure function per version step. One current shape everywhere in the engine; stored bytes and checksums never change. |
+| Proving the mechanism | bump the schema version for a demo; inject a registry in tests | **Inject a registry in tests.** A real bump would change every golden hash for nothing. |
+| Reproducible Compose | documentation only; a test | **A test** that runs in `pnpm check` without Docker. |
+| The demo | database fixtures; a script over the public API | **A script over the API**: the same endpoints the UI uses, idempotent, expected verdicts printed. |
+
+**Dependencies.** `@dataforge/core` (events, run files), `@dataforge/kafka` (record contract), `@dataforge/api`
+(event rows, configuration), the built CLI (profiling), a running API (demo, API profiling). No new
+third-party dependency.
+
+**Code and documentation changes.** Core `events/upcast.ts`; `parseEventLog` takes an optional registry;
+`fromEventRow` and the Kafka record contract read through `versionedEventSchema`; `scripts/profile/`;
+`scripts/demo/`; `pnpm profile` and `pnpm demo:seed`; one test suite in core and one in the API, plus cases in
+the API's event-row and Kafka record suites; the Jest suite counts pinned by the Milestone 7, 8 and 9 self-checks
+(38 to 40); ADR-0015; `docs/performance.md`; README; `ARCHITECTURE.md`; `data-formats.md`.
+
+**Automated tests.** Upcasting: no upcasters registered today; current-version records untouched byte for byte; a
+log written at an older version reads through a registered upcaster to the same events and bytes as today; an old
+version with no upcaster and a newer version are refused with both versions and the line named; chained steps,
+a wrong returned version, no mutation of the input, non-objects left for the schema; the same refusal for a
+database row and a Kafka record. Environment: pinned images, health checks, `.env.example` against
+`compose.yaml` and the published ports, the API accepting the documented configuration, no documented variable
+that no code reads. Golden hashes unchanged.
+
+**Acceptance criteria.**
+
+- `pnpm profile --orders 100000 --customers 100000 --products 10000 --api <url>` runs every stage at the scenario
+  limits and prints time and memory per stage; the measured results are in `docs/performance.md`.
+- Every CLI stage completes at the limit with the default Node heap, and the run downloaded from the API at the
+  limit is byte-identical to the CLI's.
+- A log, row or record at a newer schema version than the engine reads is refused naming both versions; an older
+  one is upcast when its upcaster exists; every golden hash and every generated byte is unchanged.
+- `pnpm check` fails when the Compose file and `.env.example` drift apart or an image is not pinned.
+- `pnpm demo:seed` against an empty API produces five executions whose verdicts are PASS, FAIL, PASS, FAIL, FAIL
+  as documented, and run again changes nothing.
+
+**Manual verification (Hardening and scale).** Waived by the product owner on 2026-11-23 ("dont do manual
+verification"): no guide or self-check was written for this milestone. The optional way to see it working is the
+README's "Try it with examples", whose values were observed.
+
+What was run, and how (nothing here is claimed beyond it):
+
+- `pnpm check`: the result of this milestone's final run is in the hand-off message.
+- `pnpm profile` at 5,000, 25,000 and 100,000 orders against scratch databases (dropped afterwards): the table in
+  `docs/performance.md`.
+- `pnpm demo:seed` twice against a scratch database (`dataforge_demo`): the five verdicts as documented; 48 findings
+  (8 double-processing, 8 status-mismatch, 14 field-mismatch, 18 invariant-violation, all explained) for the naive
+  target under `spec-example`, 58 for `duplicates-only`, 160 window findings for `late-data`; the second run reused
+  everything.
+- **Not run:** the Milestone 4 to 9 self-checks after this change (the Milestone 7, 8 and 9 scripts pin the Jest
+  suite count, which this milestone raised from 38 to 40; the pin was edited without re-running them), and the
+  Playwright suite. The CI jobs run on the push.
+
+**Product-owner decisions.**
+
+- D-10.1 (open): worker threads for the API's generation and executions, or accept the stalls documented in
+  `docs/performance.md`.
+- Manual verification waived for this milestone (2026-11-23).
 
 ---
 
@@ -1406,7 +1489,10 @@ calls for it, event schema versioning and upcasting, reproducible Compose enviro
 Questions waiting for the product owner. `/dataforge approve milestone <n>` asks the ones that
 belong to milestone *n* before recording the approval.
 
-None at the moment.
+- **D-10.1** (Milestone 10): the API is unresponsive for 9.4 s while it generates a run and 28.4 s while it runs an
+  execution at the scenario limit (0.3 to 1.0 s at the specification's size; `docs/performance.md`). Introduce worker
+  threads (a worker with its own database connection, executions first), or accept it for a single-user local tool?
+  Recommendation: accept it until someone needs sizes beyond about 25,000 orders (a stall of about 5 s).
 
 ## Open risks
 
@@ -1416,13 +1502,13 @@ None at the moment.
 | TypeScript 7 is current, but ts-jest and typescript-eslint do not support it yet. | Toolchain lock-in. | Pinned to TypeScript 6.0.3 (ADR-0005). Revisit when both support 7. |
 | Prisma `latest` (8.0) is still a release candidate. | An upgrade to 8.0 may change the client or the migration tooling. | Pinned to 7.10.1 (ADR-0011). Upgrade in its own change once 8.0 is final, with the integration suite as the check. |
 | Jest runs with Node's `--experimental-vm-modules` (NestJS 12 is ESM-only; the Prisma 7 client uses a dynamic import). | A Node or Jest release could change that support and break the API tests. | One flag, set in the two root scripts (ADR-0011). The production API does not use it (Node's `require` of ES modules is stable). Fallback: Nest 11 and an ESM-capable test transform. |
-| Generation runs on the API's event loop. | The API answers nothing while a large run is simulated (about 0.6 s for the specification-sized scenario, much longer at the scenario limits). | Spec 5: no worker threads before profiling proves the need; profile in Milestone 10. |
-| A run download is built in memory. | About 6 MB for the specification-sized run; far more at the scenario limits. | Streaming the export is a Milestone 10 profiling item. |
+| Generation runs on the API's event loop. | The API answers nothing while a large run is simulated (about 0.6 s for the specification-sized scenario, much longer at the scenario limits). | Measured in Milestone 10: 0.3 s at the specification's size, 1.6 s at 25,000 orders, 9.4 s at the limit (`docs/performance.md`). Worker threads are not introduced; the choice is D-10.1. |
+| A run download is built in memory. | About 6 MB for the specification-sized run; far more at the scenario limits. | Measured in Milestone 10: 139 MB at the limit, 6.3 s and a 3.7 s stall; the API process stays under 2 GB. Streaming is not needed, and the checksum must be verified before the first byte is sent (ADR-0015, decision 2). |
 | One API process per database is assumed. | A second API on the same database would requeue the first one's running runs on start-up. | Documented (ADR-0011); a lease or heartbeat on `running` runs if several instances are ever needed. |
-| An execution plans, delivers in memory and validates on the API's event loop. | The API answers nothing else meanwhile; not measured at the specification's size through the API. | Spec 5: no worker threads before profiling; Kafka delivery is asynchronous. Profile in Milestone 10 (ADR-0012). |
+| An execution plans, delivers in memory and validates on the API's event loop. | The API answers nothing else meanwhile; not measured at the specification's size through the API. | Measured in Milestone 10 through the API, in memory: 1.0 s of stall at the specification's size, 5.0 s at 25,000 orders, 28.4 s (65 s in all) at the limit. Kafka delivery is asynchronous. Worker threads: D-10.1 (ADR-0015, decision 3). |
 | An external pipeline must commit offsets after handling a record. | Zero lag would not mean "done"; its state could be incomplete when submitted. | Documented with the external API; DataForge checks for an active member and zero lag before the first record (ADR-0012, decision 7). |
-| Execution work directories and Kafka topics accumulate. | Disk use grows with every Kafka execution. | Kept on purpose for inspection (D-4.2); `docker compose down` removes the topics, the work directories are removed by hand. A clean-up command is a Milestone 10 candidate. |
-| The web UI is served by `vite preview`. | Fine on this machine; not a production server, no authentication. | The API stays on 127.0.0.1 (D-6.2) and the UI is reachable only from this machine by default (`WEB_HOST`). Serving the UI from the API and production hosting are Milestone 10 questions (D-8.1). |
+| Execution work directories and Kafka topics accumulate. | Disk use grows with every Kafka execution. | Kept on purpose for inspection (D-4.2); `docker compose down` removes the topics, the work directories are removed by hand. A clean-up command was considered in Milestone 10 and left out: a command that deletes data deserves its own decision (ADR-0015, decision 7). |
+| The web UI is served by `vite preview`. | Fine on this machine; not a production server, no authentication. | The API stays on 127.0.0.1 (D-6.2) and the UI is reachable only from this machine by default (`WEB_HOST`). Serving the UI from the API and production hosting were left out of Milestone 10: the API has no authentication, which keeps a hosted instance out of scope (spec 11; ADR-0015, decision 7; D-8.1). |
 | The UI and the API change together. | A changed response makes a page say "Unexpected response from the API". | Zod schemas of only what the pages read, and a contract test against the real API in the integration suite (ADR-0013, decision 3). |
 | The UI derives an entity's aggregate from its ID (`pay_n_k` is in `ord_n`). | A new entity type or ID scheme would leave findings without a timeline link. | One tested function (`src/lib/entity.ts`); the contract test requires every finding of two executions to map to an aggregate that has events. |
 | The self-check's rendered-page checks need Microsoft Edge or Google Chrome. | Without one they fail (or are skipped with `-NoBrowser`). | Edge ships with Windows; the script looks in the usual folders of both. |
@@ -1431,10 +1517,12 @@ None at the moment.
 | The in-memory transport ignores wall-clock time (only order matters). | A user's pipeline that uses wall-clock processing time cannot be tested offline. | The reference targets take processing time from the delivery clock (`scheduledDeliveryTimeMs` header), so windows are tested the same in process and through Kafka (ADR-0010). Kafka delivery can also play the plan in compressed wall-clock time (`--speed`). |
 | Windows with several Kafka partitions. | Cross-partition interleaving can move the reference target's stream time ahead of the plan's, so it may close windows earlier than the plan predicts; Kafka Streams keeps stream time per partition. | One partition is the default and matches the plan exactly; the integration tests check windows with one partition only (ADR-0010). |
 | Window metrics are specific to the e-commerce domain. | A new metric or event type needs code. | One definition in core (`windowContribution`, `WINDOW_METRIC_EVENT_TYPE`), used by the expected windows, both targets and the validator. |
-| Kafka delivery is sequential (one acknowledged record at a time, about 1 ms each locally). | The spec-sized scenario takes about 20 s; the scenario limits would take minutes. | Exact per-record offsets and order are worth it for now; batching is a Milestone 10 profiling item (ADR-0009). |
+| Kafka delivery is sequential (one acknowledged record at a time, about 1 ms each locally). | The spec-sized scenario takes about 20 s; the scenario limits would take minutes. | Exact per-record offsets and order are worth it for now. Milestone 10 profiled the in-memory path only; a Kafka delivery at the scenario limits (hundreds of thousands of records, one acknowledged at a time) was not measured, and batching remains a candidate if anyone needs it (ADR-0009). |
 | With several partitions, root-cause hints still come from the plan. | A naive-target finding caused by cross-partition interleaving can be reported as "not explained by delivery". | One partition is the default, which equals the plan exactly. Hints from the consumer's processing log are a possible later addition. |
-| Plans are built in memory (about 19,000 attempts for the spec-sized scenario, planned in about 0.4 s). | Memory use near the scenario limits (100,000 orders, a few hundred thousand attempts). | Profile with generation in Milestone 10. |
-| In-memory generation. | Memory use near the scenario limits. | Limits enforced by the schema; profile in Milestone 10 before optimizing. |
+| Plans are built in memory (about 19,000 attempts for the spec-sized scenario, planned in about 0.4 s). | Memory use near the scenario limits (100,000 orders, a few hundred thousand attempts). | Measured in Milestone 10: the plan stage peaks at 1.7 GB and takes 13.9 s at the limit (`docs/performance.md`). Nothing to change. |
+| In-memory generation. | Memory use near the scenario limits. | Measured in Milestone 10: generation peaks at 1.4 GB and takes 12.3 s at the limit; the whole offline loop takes about a minute. No streaming needed (ADR-0015, decision 2). |
+| Event schema version 1 is the only one that has existed, so no upcaster has run on real data. | The first schema change could expose a gap the injected-registry tests did not imagine. | The mechanism exists at all three read boundaries and refuses unreadable versions by name (ADR-0015, decision 4); the first change adds its upcaster, with a test that reads a log written by the old engine. |
+| Milestone 10 had no manual verification, and the Milestone 7, 8 and 9 self-checks were edited (Jest suite count 38 to 40) without being re-run. | A self-check could fail on a count even though the product is fine. | `/dataforge verify milestone 7`, `8` or `9` runs them; the edit is one number per script. |
 | The editors validate through the API. | With the API stopped, a document that parses cannot be checked or saved ("The API is not reachable"). | By design (ADR-0014, decision 2): one schema, no drift. The browser still reports syntax errors with their place. |
 | Live pages poll once a second. | Several open tabs on one running execution each ask once a second; the API's event loop is busy while it generates or delivers in memory. | Each tab waits for its last answer before asking again, and stops when the resource ends; a status row is a cheap read. SSE is the alternative if it ever matters (D-9.3). |
 | The elapsed time of a waiting page is the browser's clock minus the API's `requestedAt`. | A browser on another machine with a skewed clock shows a wrong wait (the page still updates correctly). | The API is reachable from this machine only (D-6.2), so both clocks are the same machine's; the number is only a hint. |

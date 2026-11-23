@@ -46,6 +46,16 @@ describe('canonical event rows', () => {
       /Stored event 1 of run run-1 is not a valid canonical event: payload: Unrecognized key: "unexpected"/,
     );
   });
+
+  it('refuses a row stored at a schema version this engine cannot read, naming both versions', () => {
+    const [row] = rowsFrom(toEventColumns(events));
+    if (row === undefined) {
+      throw new Error('no events');
+    }
+    expect(() => fromEventRow({ ...row, schemaVersion: 2 }, 'run-1')).toThrow(
+      /Stored event 1 of run run-1 is not a valid canonical event: schemaVersion: schemaVersion 2 is newer than the version this engine reads \(1\)/,
+    );
+  });
 });
 
 describe('generateRun', () => {

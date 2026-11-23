@@ -82,6 +82,13 @@ describe('delivery record contract', () => {
       expect(problemsOf(withValue({ ...value, event: { ...event, payload: { ...event.payload, customerId: 7 } } }))[0]).toMatch(/^value\.event\.payload/);
     });
 
+    it('an event written at a schema version this engine cannot read', () => {
+      const event = value.event as Record<string, unknown>;
+      expect(problemsOf(withValue({ ...value, event: { ...event, schemaVersion: 2 } }))).toEqual([
+        expect.stringMatching(/^value\.event\.schemaVersion: schemaVersion 2 is newer than the version this engine reads \(1\)/),
+      ]);
+    });
+
     it('missing or malformed headers', () => {
       const headers = { ...valid.headers } as Record<string, string | undefined>;
       expect(problemsOf({ ...valid, headers: { ...headers, attemptId: undefined } })).toEqual([expect.stringMatching(/^headers\.attemptId: /)]);

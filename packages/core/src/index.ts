@@ -33,6 +33,14 @@ export {
   type OrderLine,
   type PayloadOf,
 } from './events/canonical-event';
+export {
+  EVENT_UPCASTERS,
+  EventVersionError,
+  upcastEventRecord,
+  versionedEventSchema,
+  type EventUpcaster,
+  type EventUpcasters,
+} from './events/upcast';
 export { compareCanonicalOrder, draftEvent, sequenceDrafts, type EventDraft, type EventDraftOf } from './events/event-draft';
 export {
   BYTE_ORDER_MARK_CODE,
