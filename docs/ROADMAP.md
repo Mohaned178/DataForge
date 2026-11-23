@@ -13,7 +13,7 @@ whenever implementation changes the plan. The workflow is driven by the `/datafo
 | 3 | Validation engine + reference targets (offline end-to-end) | **Approved 2026-11-22** |
 | 4 | Kafka delivery + out-of-process target | **Approved 2026-11-22** |
 | 5 | Event-time windows and late data | **Approved 2026-11-22** |
-| 6 | Persistence (PostgreSQL + Prisma) + API foundation (NestJS) | Planned |
+| 6 | Persistence (PostgreSQL + Prisma) + API foundation (NestJS) | **Approved 2026-11-23** |
 | 7 | Test executions through the API | Planned |
 | 8 | Web UI: run history and report explorer | Planned |
 | 9 | Web UI: configure and launch + Playwright end-to-end | Planned |
@@ -620,20 +620,169 @@ Self-check re-run before approval: 13 of 13 in PowerShell 7.6, 12 of 12 in Windo
 
 ---
 
-## Milestone 6: Persistence + API foundation
+## Milestone 6: Persistence (PostgreSQL + Prisma) + API foundation (NestJS)
 
-**Objective.** Durable, queryable scenarios and simulation runs behind a NestJS API.
+**Objective.** Make scenarios and simulation runs durable and queryable behind an HTTP API: register a
+scenario, start a run with a seed, follow its status, browse run history and the stored canonical
+events, and download a run that is byte-identical to `dataforge generate` for the same inputs and
+passes `dataforge verify`. The engine is unchanged; the API wraps it.
 
-**Included.** PostgreSQL in Compose; Prisma schema and migrations (scenario, immutable scenario
-version, simulation run, canonical event `(run_id, sequence)`, expected-state snapshot); NestJS
-modules for scenarios and simulation runs; Zod validation pipe; JSONL export.
+**Included.**
 
-**Decisions to make.** Prisma version (the `latest` npm tag currently points to an 8.0 release
-candidate; 7.10.x is the newest stable); bulk insert strategy; in-process background runs with
-database-backed status.
+- **Local infrastructure.** A `postgres` service in `compose.yaml` (pinned `postgres:18.7-alpine`,
+  `pg_isready` health check, a named volume so run history survives `docker compose down`;
+  `docker compose down -v` resets it), published on host port 5433 by default
+  (`POSTGRES_HOST_PORT`), because a local PostgreSQL install commonly holds 5432 on Windows.
+  `DATABASE_URL`, `API_HOST`, `API_PORT` in `.env.example`.
+- **The run files, shared.** The four files of a run directory (`events.jsonl`,
+  `expected-state.json`, `scenario.resolved.json`, `manifest.json`) and the manifest schema move from
+  the CLI into `@dataforge/core` (`buildRunFiles`, pure), so the CLI and the API produce them with one
+  function. CLI output is unchanged (golden hashes).
+- **`@dataforge/api`** (new app, NestJS 12, Express):
+  - **Prisma schema and migrations** (`apps/api/prisma/`): `scenario` (unique name),
+    `scenario_version` (immutable: resolved definition, scenario hash, version number; unique
+    per scenario by number and by hash), `simulation_run` (scenario version, seed, engine version,
+    status `queued`/`running`/`succeeded`/`failed`, error, timestamps, event count, manifest),
+    `canonical_event` (primary key `(run_id, sequence)`, unique `(run_id, event_id)`, the envelope as
+    columns, the payload as JSONB, indexed by aggregate and by type), `expected_state_snapshot`
+    (one per run, JSONB plus its SHA-256).
+  - **Scenarios:** `POST /scenarios` (body = a scenario file, exactly as in `scenarios/`; version 1),
+    `GET /scenarios`, `GET /scenarios/:id`, `POST /scenarios/:id/versions` (a new immutable version,
+    or the existing one when the resolved definition is identical), `GET
+    /scenarios/:id/versions/:version`.
+  - **Runs:** `POST /runs` (`{ scenarioId, version?, seed }`, answers `202` with a queued run),
+    `GET /runs` (history, newest first, filters `scenarioId` and `status`, `limit`/`offset`),
+    `GET /runs/:id` (inputs, status, timestamps, counts, checksums, error),
+    `GET /runs/:id/events` (a page of stored events, filters `type`, `aggregateId`,
+    `fromSequence`, `limit`), `GET /runs/:id/files/<name>` (the four run files, exact bytes, checked
+    against the stored checksums before they are sent).
+  - **In-process background runner:** one run at a time, status in the database; a run's events,
+    snapshot and final status are written in one transaction, so a run is either complete or absent;
+    a run is claimed with a conditional update, so it is never processed twice; on start-up, runs left
+    `queued` or `running` by a stopped API are processed again (generation is deterministic, so the
+    result is the same).
+  - **Validation:** Zod schemas through Nest 12's built-in `StandardSchemaValidationPipe`; the
+    scenario body is validated by the core `scenarioSchema`, so the API reports the same paths as
+    the CLI (`400` with one message per problem). Configuration validated with Zod at start-up.
+  - **Health and failure:** `GET /health` (database reachable, engine version). The API refuses to
+    start, with exit code 3 and the command to run, when PostgreSQL is unreachable or not migrated.
+- Root scripts: `pnpm db:migrate` (apply migrations), `pnpm api` (start the built API).
+- `pnpm test:integration` now needs PostgreSQL as well as Kafka (one `docker compose up -d --wait`
+  starts both); it uses its own database (`dataforge_test`), so manual-test data is never touched.
 
-**Automated tests.** Prisma integration tests against real PostgreSQL; API tests (supertest); events
-exported from the database are byte-identical to CLI output for the same inputs.
+**Architectural decisions** (ADR-0011).
+
+| Question | Options | Choice |
+| --- | --- | --- |
+| Prisma version | 8.0.0-rc.34 (`latest` tag); 7.10.1 (newest stable) | **7.10.1**, pinned. 8.0 is still a release candidate. Prisma 7's TypeScript client (`prisma-client` generator, CommonJS output, `@prisma/adapter-pg` driver adapter, no Rust query engine) spiked on 2026-11-23 against `postgres:18.7-alpine`. |
+| NestJS version | 11.2 (`legacy` tag, CommonJS); 12.6 (current, ESM-only) | **12.6.** Node 24 loads ESM from CommonJS natively, so the repo stays CommonJS; Nest 12 has a built-in Standard Schema pipe that takes Zod schemas, so no extra validation dependency. Under Jest, Nest 12 and Prisma 7 both need `--experimental-vm-modules` (Prisma 7 needs it with Nest 11 too), so `pnpm test` passes that flag. |
+| Where Prisma lives | its own `packages/persistence`; inside `apps/api` | **Inside `apps/api`.** The API is its only user (the CLI stays file-based); a package would add wiring without a second consumer. The ESLint guard keeps Prisma out of the pure packages. |
+| Bulk insert of canonical events | `createMany` in chunks; one `INSERT ... SELECT FROM unnest(arrays)` per chunk; `COPY` | **`unnest`, 5,000 events per statement.** Spike, 20,000 events: `createMany` about 3.6 s at any chunk size, `unnest` about 0.9 s. `COPY` needs another dependency and its own connection. The raw SQL lives in one repository function, and the export checksum test proves the round trip. |
+| Run files from the database | store the four files as text; store rows and rebuild the files | **Rows, rebuilt, then checked.** Events are queryable columns plus JSONB; the export rebuilds each file with the core serializers and refuses to send it unless it matches the checksum recorded at generation (a modified row is an integrity error, not silently served). |
+| Background runs | a queue library (BullMQ, Redis); in-process queue with database status | **In-process**, the roadmap's plan (spec 5: no Redis without a need). Generation is synchronous and deterministic, so recovery is "run it again". |
+| Database for integration tests | the development database; a separate one | **Separate** (`dataforge_test`), created and migrated by the integration global setup. |
+| IDs | deterministic; UUIDv7 | **UUIDv7** for scenarios, versions and runs. They are application records, not simulation data (nothing in a run's files contains them), and v7 sorts by creation time. |
+
+**Dependencies.** `@dataforge/core` (`simulate`, `scenarioSchema`, `parseScenario`, `normalizeSeed`,
+`canonicalEventSchema`, `serializeEventLog`, `serializeExpectedState`, `canonicalJson`, `sha256Hex`,
+`ENGINE_VERSION`). CLI: `run-directory.ts` (manifest schema, moved to core) and `generate`. New
+third-party dependencies: `@nestjs/common`, `@nestjs/core`, `@nestjs/platform-express` 12.6.0
+(the API framework), `reflect-metadata` 0.2.2 and `rxjs` 7.8.2 (Nest's required peers),
+`@prisma/client` and `@prisma/adapter-pg` 7.10.1 (database access), `prisma` 7.10.1 (migrations and
+client generation, dev), `@nestjs/testing` 12.6.0, `supertest` 7.3.2 and `@types/supertest` 7.2.1
+(API tests, dev), `pg` 8.23.1 (integration global setup creates the test database, dev; already a
+dependency of the Prisma adapter). Docker Desktop for PostgreSQL.
+
+**Code and documentation changes.** Core `run/run-files.ts`; CLI `generate` and `run-directory.ts`
+use it; new `apps/api` (Prisma schema, migration, modules for database, health, scenarios, runs);
+`compose.yaml`, `.env.example`; root scripts `test` (VM-modules flag), `db:migrate`, `api`;
+`jest.config.js` (API path mappings), `tsconfig.jest.json` (decorators), integration global setup
+(PostgreSQL and the test database); ESLint ignores the generated client; CI integration job;
+ADR-0011; `data-formats.md` (database tables, API resources); `ARCHITECTURE.md`; README; manual
+verification guide and self-check.
+
+**Automated tests.**
+
+- Unit (`pnpm test`, no database): `buildRunFiles` equals the CLI's files (golden hashes unchanged);
+  configuration validation; request schemas (seed normalisation, version, paging, unknown fields);
+  event row to canonical event mapping round trip; the background runner with in-memory
+  collaborators (status order, a failing run ends `failed` with its error, recovery order, a run
+  claimed twice is processed once).
+- Integration (`pnpm test:integration`, real PostgreSQL): migrations apply to an empty database;
+  constraints (`(run_id, sequence)`, `(run_id, event_id)`, unique scenario name and version hash);
+  API through supertest: scenario create, invalid body with paths, duplicate name, new and identical
+  versions, name mismatch, unknown IDs (`404`); run lifecycle `queued` to `succeeded`; history
+  filters and paging; event queries by aggregate and type; **equivalence**: for two seeds of the small
+  scenario and the specification-sized scenario, the four downloaded files are byte-identical to the
+  CLI's `generate` output, and the built CLI's `verify` passes on them; a row modified in the
+  database makes the export fail with an integrity error; a run left `running` is completed after a
+  restart; health with the database up.
+
+**Acceptance criteria.**
+
+- `docker compose up -d --wait` starts a healthy PostgreSQL from a pinned image next to Kafka;
+  `pnpm db:migrate` creates the schema from the committed migration.
+- A scenario file posted to the API becomes scenario version 1; an invalid one is rejected with
+  `400` and the path of each problem; a changed definition becomes a new immutable version, an
+  identical one returns the existing version.
+- `POST /runs` answers `202` at once; the run moves `queued` to `running` to `succeeded` in the
+  database, and its events, expected-state snapshot and manifest are stored.
+- `GET /runs` lists run history newest first with filters; `GET /runs/:id/events` returns stored
+  events by aggregate, type and sequence range.
+- The four files downloaded from the API are byte-identical to `dataforge generate` for the same
+  scenario and seed (small and specification-sized scenarios) and pass `dataforge verify`.
+- A modified stored event is never exported: the download fails with an integrity error.
+- Runs survive an API restart; a run interrupted by a stop is completed on the next start.
+- The API exits with code 3 and the command to run when PostgreSQL is unreachable or not migrated.
+- `pnpm check` needs no database; `pnpm test:integration` reports clearly when PostgreSQL or Kafka
+  is unavailable.
+
+**Manual verification.** `docs/manual-verification/milestone-6.md` (MV-6.1 to MV-6.16: install and
+checks; PostgreSQL and the migration; the integration suite; start the API and its health; register
+a scenario; invalid and duplicate scenarios; immutable versions; a run from `queued` to
+`succeeded`; download a run, the same bytes as `generate`, `verify` passes; the specification's
+example size; run history, the same inputs twice, event queries; invalid run requests; a tampered
+stored event; restart and a killed API's runs; the API without PostgreSQL or migrations; the engine
+kept free of NestJS and Prisma). Self-check: `scripts/verification/milestone-6.ps1` (own database
+`dataforge_selfcheck`, own API on port 3106), 16 of 16 cases passing in PowerShell 7.6 and 15 of 15 in Windows PowerShell 5.1 (`-SkipInstall`) on 2026-11-23, with Docker Desktop and the Compose services; the guide's command blocks were run once, literally, in Windows PowerShell 5.1.
+
+**Implementation notes** (changes to the plan above, with the reason).
+
+- The run-file format (`RUN_FILES`, the manifest schema, `buildRunFiles`) moved from
+  `apps/cli/src/run-directory.ts` into `@dataforge/core` (`run/run-files.ts`); the CLI re-exports it.
+  The four files of both example scenarios are pinned in a new core test with the hashes `generate`
+  wrote before the move, and are unchanged.
+- Added beyond the plan, for spec 4.2 ("never modify the canonical event history"): a trigger that
+  refuses every `UPDATE` of `scenario_version` and `canonical_event`, and a unique
+  `(run_id, aggregate_id, aggregate_version)`. The trigger raises PL/pgSQL's default error code:
+  Prisma reports `restrict_violation` as "Foreign key constraint violated", which misleads.
+- Event pages (`GET /runs/:id/events`) validate each row against the event schema; only a full file
+  download can compare with the recorded checksum, so a modified row that is still a valid event is
+  caught by the download (MV-6.13), not by the page.
+- `apps/api/scripts/recreate-database.js` drops and recreates scratch databases (names ending in
+  `_test` or `_selfcheck` only), for the integration suite and the self-check, which therefore never
+  touch the development database.
+- `pnpm test:integration` has one global setup (`jest.integration.setup.js`) that checks Kafka and
+  PostgreSQL together and reports every missing service. The in-band integration run prints one
+  `ExperimentalWarning` line for the VM-modules flag; `pnpm test` prints none.
+- The API turns Prisma's driver errors into one line (`connection refused (ECONNREFUSED)`,
+  PostgreSQL's own message for a wrong password or a missing database) instead of Prisma's
+  multi-line message.
+- Windows PowerShell 5.1's `Invoke-WebRequest` is many times slower with its progress bar on; the
+  guide sets `$ProgressPreference = 'SilentlyContinue'` before the downloads.
+
+**Product-owner decisions** (2026-11-23, the recommendations accepted):
+
+- D-6.1: the same scenario version and seed requested twice give two runs. A run is a history entry
+  (when it was asked for, by which engine), and two identical checksums make the determinism
+  visible (MV-6.11). Returning an existing succeeded run instead may be added later as an option.
+- D-6.2: the API is reachable from this machine only (`API_HOST=127.0.0.1` by default) until a
+  milestone needs more, because the specification excludes authentication from the MVP;
+  `API_HOST=0.0.0.0` remains an explicit opt-in without protection (ADR-0011, decision 8).
+- D-6.3: PostgreSQL keeps run history across `docker compose down` (named volume; `down -v`
+  resets it), unlike Kafka, whose topics are scratch data per delivery (ADR-0011, decision 9).
+
+**Approved** 2026-11-23.
 
 ---
 
@@ -676,8 +825,12 @@ None at the moment.
 | --- | --- | --- |
 | KafkaJS has had no release since 2.2.4 (February 2023). | A future broker could break it; unfixed bugs (a Node 24 timer warning is filtered). | Spiked in Milestone 4: works with `apache/kafka:4.3.2` (ADR-0009). Only `@dataforge/kafka` imports it (lint-enforced); `@confluentinc/kafka-javascript` (KafkaJS-compatible API) is the fallback. Re-run the integration suite whenever the broker image changes. |
 | TypeScript 7 is current, but ts-jest and typescript-eslint do not support it yet. | Toolchain lock-in. | Pinned to TypeScript 6.0.3 (ADR-0005). Revisit when both support 7. |
-| Prisma `latest` is a release candidate. | Unstable persistence layer. | Pin a stable 7.x in Milestone 6 unless 8.0 is final by then. |
-| Kafka-backed checks need Docker Desktop running. | Without it, `deliver --transport kafka` and `pnpm test:integration` cannot run (exit code 3 and a clear message, never a silent pass). | `pnpm check` needs no Docker; CI runs the integration suite against the Compose broker on every push. Milestone 6 adds PostgreSQL to the same Compose file. |
+| Prisma `latest` (8.0) is still a release candidate. | An upgrade to 8.0 may change the client or the migration tooling. | Pinned to 7.10.1 (ADR-0011). Upgrade in its own change once 8.0 is final, with the integration suite as the check. |
+| Jest runs with Node's `--experimental-vm-modules` (NestJS 12 is ESM-only; the Prisma 7 client uses a dynamic import). | A Node or Jest release could change that support and break the API tests. | One flag, set in the two root scripts (ADR-0011). The production API does not use it (Node's `require` of ES modules is stable). Fallback: Nest 11 and an ESM-capable test transform. |
+| Generation runs on the API's event loop. | The API answers nothing while a large run is simulated (about 0.6 s for the specification-sized scenario, much longer at the scenario limits). | Spec 5: no worker threads before profiling proves the need; profile in Milestone 10. |
+| A run download is built in memory. | About 6 MB for the specification-sized run; far more at the scenario limits. | Streaming the export is a Milestone 10 profiling item. |
+| One API process per database is assumed. | A second API on the same database would requeue the first one's running runs on start-up. | Documented (ADR-0011); a lease or heartbeat on `running` runs if several instances are ever needed. |
+| Docker-backed checks need Docker Desktop running. | Without it, `deliver --transport kafka`, the API and `pnpm test:integration` cannot run (exit code 3 and a clear message, never a silent pass). | `pnpm check` needs no Docker; CI runs the integration suite against the Compose services (Kafka and PostgreSQL) on every push. |
 | Root-cause hints rely on a hand-written dependency model of the e-commerce domain. | New event types could leave findings under-explained (reported as "not explained by delivery"). | ADR-0008 names the rule; the end-to-end tests assert that every naive finding is explained under four profiles and on the spec-sized scenario, so a gap shows up as a failing test. |
 | The in-memory transport ignores wall-clock time (only order matters). | A user's pipeline that uses wall-clock processing time cannot be tested offline. | The reference targets take processing time from the delivery clock (`scheduledDeliveryTimeMs` header), so windows are tested the same in process and through Kafka (ADR-0010). Kafka delivery can also play the plan in compressed wall-clock time (`--speed`). |
 | Windows with several Kafka partitions. | Cross-partition interleaving can move the reference target's stream time ahead of the plan's, so it may close windows earlier than the plan predicts; Kafka Streams keeps stream time per partition. | One partition is the default and matches the plan exactly; the integration tests check windows with one partition only (ADR-0010). |

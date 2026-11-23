@@ -103,3 +103,21 @@ export {
   serializeActualWindows,
   type ActualWindows,
 } from './windows/actual-windows';
+
+export {
+  CHECKSUMMED_FILES,
+  RUN_FILES,
+  RUN_FILE_NAMES,
+  buildRunFiles,
+  countEventsByType,
+  fileEntry,
+  fileEntrySchema,
+  runManifestSchema,
+  serializeResolvedScenario,
+  serializeRunManifest,
+  type ChecksummedFile,
+  type FileEntry,
+  type RunFileName,
+  type RunFiles,
+  type RunManifest,
+} from './run/run-files';

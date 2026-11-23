@@ -575,3 +575,61 @@ make the verdict `FAIL` like entity findings.
 | `shipment.delivered-time` | invariant-violation | A delivery time exactly when DELIVERED. |
 | `customer.order-count` | invariant-violation | `orderCount` is the number of the customer's orders. |
 | `customer.total-paid` | invariant-violation | `totalPaidMinor` is the sum paid on the customer's orders. |
+
+## Database (`@dataforge/api`, Milestone 6)
+
+PostgreSQL, schema `apps/api/prisma/schema.prisma`, applied by `pnpm db:migrate` from the committed
+migrations in `apps/api/prisma/migrations`. IDs are UUIDv7; timestamps are `timestamptz` with
+millisecond precision and are wall-clock application metadata, never simulation time.
+
+| Table | Columns | Constraints |
+| --- | --- | --- |
+| `scenario` | `id`, `name`, `created_at` | `name` unique. |
+| `scenario_version` | `id`, `scenario_id`, `version` (1, 2, ...), `scenario_hash` (`sha256:...`), `definition` (JSONB: the resolved scenario, as in `scenario.resolved.json`), `created_at` | Unique `(scenario_id, version)` and `(scenario_id, scenario_hash)`; rows are immutable (an `UPDATE` raises `scenario_version rows are immutable`). |
+| `simulation_run` | `id`, `scenario_version_id`, `seed`, `engine_version`, `status` (`queued`, `running`, `succeeded`, `failed`), `error`, `requested_at`, `started_at`, `finished_at`, `event_count`, `manifest` (JSONB: `manifest.json`), `summary` (JSONB: the expected state's `summary`) | `manifest`, `summary` and `event_count` are set exactly when the run succeeded. |
+| `canonical_event` | `run_id`, `sequence`, `event_id`, `type`, `aggregate_type`, `aggregate_id`, `aggregate_version`, `event_time_ms` (bigint), `schema_version`, `payload` (JSONB) | Primary key `(run_id, sequence)`; unique `(run_id, event_id)` and `(run_id, aggregate_id, aggregate_version)`; index `(run_id, type, sequence)`; rows are immutable. |
+| `expected_state_snapshot` | `run_id`, `last_sequence`, `document` (JSONB: `expected-state.json`), `sha256` (of `expected-state.json`) | One per run. |
+
+A run's events, snapshot and final status are written in one transaction: a run that is not
+`succeeded` has no events and no snapshot.
+
+## HTTP API (`pnpm api`, default `http://127.0.0.1:3000`)
+
+JSON in and out (`Content-Type: application/json`). Errors have the shape
+`{ "statusCode": 400, "error": "Bad Request", "message": [...] }`; a validation error lists one
+message per problem, prefixed by its path (`orders.count: Too small: expected number to be >=0`).
+Unknown fields and query parameters are rejected.
+
+| Method and path | Body or query | Answer |
+| --- | --- | --- |
+| `GET /health` | | `200 {status: "ok", database: "up", engineVersion}`; `503` with `database: "down"` while PostgreSQL is unreachable. |
+| `POST /scenarios` | A scenario file (the format above) | `201` the scenario with version 1; `400` invalid; `409` a scenario with that name exists. |
+| `GET /scenarios` | | `200 {scenarios: [{id, name, createdAt, latestVersion}]}`, by name. |
+| `GET /scenarios/:id` | | `200 {id, name, createdAt, latestVersion, versions: [{version, scenarioHash, createdAt}]}`. |
+| `POST /scenarios/:id/versions` | A scenario file with the scenario's name | `201` a new version; `200` the existing version whose resolved definition is identical; `400` another name. |
+| `GET /scenarios/:id/versions/:version` | | `200 {scenarioId, scenarioName, version, scenarioHash, createdAt, definition}`. |
+| `POST /runs` | `{scenarioId, seed, version?}`; `seed` a string or a whole number (`42` and `"42"` are one seed), `version` the latest by default | `202` the run, `status: "queued"`. |
+| `GET /runs` | `scenarioId`, `status`, `limit` (1-200, default 50), `offset` | `200 {runs, total, limit, offset}`, newest first. |
+| `GET /runs/:id` | | `200` the run (below). |
+| `GET /runs/:id/events` | `type`, `aggregateId`, `fromSequence` (default 1), `limit` (1-1,000, default 100) | `200 {runId, events, nextSequence}`: canonical events in sequence order; `nextSequence` is the `fromSequence` of the next page, or `null`. `409` unless the run succeeded. |
+| `GET /runs/:id/files/<name>` | `name`: `events.jsonl`, `expected-state.json`, `scenario.resolved.json` or `manifest.json` | `200` the exact bytes `dataforge generate` writes for the same scenario and seed; `409` unless the run succeeded; `500 Run Integrity Error` when the rebuilt file does not match the checksum recorded at generation. |
+
+A run:
+
+```jsonc
+{
+  "id": "01a205a8-55ba-706e-b698-c92b85bbe13b",
+  "status": "succeeded",                  // queued | running | succeeded | failed
+  "scenario": { "id": "...", "name": "ecommerce-small", "version": 1, "scenarioHash": "sha256:..." },
+  "seed": "42",
+  "engineVersion": "0.1.0",               // the engine that generates (generated) it
+  "requestedAt": "2026-11-22T23:47:27.802Z",
+  "startedAt": "2026-11-22T23:47:27.808Z",  // null while queued
+  "finishedAt": "2026-11-22T23:47:27.918Z", // null until it succeeded or failed
+  "error": null,                          // why it failed
+  "eventCount": 472,                      // the rest is null until it succeeded
+  "eventsByType": { "ProductCreated": 12, "...": 0 },
+  "files": { "events.jsonl": { "sha256": "...", "bytes": 146142 }, "...": {} },
+  "summary": { "orders": 120, "revenueMinor": 2525664, "...": 0 }
+}
+```

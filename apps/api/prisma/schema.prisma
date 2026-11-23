@@ -1,0 +1,108 @@
+// The DataForge application database (ADR-0011). Migrations: prisma/migrations, applied with
+// "pnpm db:migrate". The canonical event log of a run is stored row by row; the four run files are
+// rebuilt from these rows and checked against the checksums recorded when the run was generated.
+
+generator client {
+  provider            = "prisma-client"
+  output              = "../src/generated/prisma"
+  moduleFormat        = "cjs"
+  importFileExtension = ""
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+/// A named scenario. Its definitions live in immutable versions.
+model Scenario {
+  id        String            @id @default(uuid(7)) @db.Uuid
+  name      String            @unique
+  createdAt DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
+  versions  ScenarioVersion[]
+
+  @@map("scenario")
+}
+
+/// One immutable scenario definition: the resolved configuration (defaults filled in) and its hash.
+model ScenarioVersion {
+  id           String          @id @default(uuid(7)) @db.Uuid
+  scenarioId   String          @map("scenario_id") @db.Uuid
+  version      Int
+  scenarioHash String          @map("scenario_hash")
+  definition   Json            @db.JsonB
+  createdAt    DateTime        @default(now()) @map("created_at") @db.Timestamptz(3)
+  scenario     Scenario        @relation(fields: [scenarioId], references: [id], onDelete: Restrict)
+  runs         SimulationRun[]
+
+  @@unique([scenarioId, version])
+  @@unique([scenarioId, scenarioHash])
+  @@map("scenario_version")
+}
+
+enum RunStatus {
+  queued
+  running
+  succeeded
+  failed
+
+  @@map("run_status")
+}
+
+/// A simulation of one scenario version with one seed. Timestamps are application metadata (wall
+/// clock), never simulation time.
+model SimulationRun {
+  id                String                 @id @default(uuid(7)) @db.Uuid
+  scenarioVersionId String                 @map("scenario_version_id") @db.Uuid
+  seed              String
+  engineVersion     String                 @map("engine_version")
+  status            RunStatus              @default(queued)
+  error             String?
+  requestedAt       DateTime               @default(now()) @map("requested_at") @db.Timestamptz(3)
+  startedAt         DateTime?              @map("started_at") @db.Timestamptz(3)
+  finishedAt        DateTime?              @map("finished_at") @db.Timestamptz(3)
+  eventCount        Int?                   @map("event_count")
+  /// manifest.json of the run (checksums of the other three files), set when it succeeds.
+  manifest          Json?                  @db.JsonB
+  /// The expected state's summary (counts, orders by status, revenue), set when it succeeds.
+  summary           Json?                  @db.JsonB
+  scenarioVersion   ScenarioVersion        @relation(fields: [scenarioVersionId], references: [id], onDelete: Restrict)
+  events            CanonicalEvent[]
+  expectedState     ExpectedStateSnapshot?
+
+  @@index([scenarioVersionId, requestedAt])
+  @@index([status, requestedAt])
+  @@index([requestedAt])
+  @@map("simulation_run")
+}
+
+/// One canonical event of a run, positioned by its sequence. The envelope is in columns, the payload in JSONB.
+model CanonicalEvent {
+  runId            String        @map("run_id") @db.Uuid
+  sequence         Int
+  eventId          String        @map("event_id")
+  type             String
+  aggregateType    String        @map("aggregate_type")
+  aggregateId      String        @map("aggregate_id")
+  aggregateVersion Int           @map("aggregate_version")
+  eventTimeMs      BigInt        @map("event_time_ms")
+  schemaVersion    Int           @map("schema_version")
+  payload          Json          @db.JsonB
+  run              SimulationRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@id([runId, sequence])
+  @@unique([runId, eventId])
+  @@unique([runId, aggregateId, aggregateVersion])
+  @@index([runId, type, sequence])
+  @@map("canonical_event")
+}
+
+/// The expected state a correct pipeline must reach after the run's events, as written to expected-state.json.
+model ExpectedStateSnapshot {
+  runId        String        @id @map("run_id") @db.Uuid
+  lastSequence Int           @map("last_sequence")
+  document     Json          @db.JsonB
+  sha256       String
+  run          SimulationRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@map("expected_state_snapshot")
+}

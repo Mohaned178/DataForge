@@ -1,4 +1,8 @@
-/** @type {import('jest').Config} */
+/**
+ * pnpm test runs Jest with --experimental-vm-modules: NestJS 12 is ESM-only and the Prisma 7 client
+ * loads its query compiler with a dynamic import, which Jest supports only with that flag (ADR-0011).
+ * @type {import('jest').Config}
+ */
 module.exports = {
   testEnvironment: 'node',
   roots: ['<rootDir>/packages', '<rootDir>/apps'],

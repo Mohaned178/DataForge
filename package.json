@@ -11,9 +11,11 @@
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
     "lint": "eslint .",
-    "test": "jest",
+    "test": "node --experimental-vm-modules --disable-warning=ExperimentalWarning node_modules/jest/bin/jest.js",
     "check": "pnpm typecheck && pnpm lint && pnpm test",
-    "test:integration": "pnpm build && jest --config jest.integration.config.js --runInBand",
+    "test:integration": "pnpm build && node --experimental-vm-modules --disable-warning=ExperimentalWarning node_modules/jest/bin/jest.js --config jest.integration.config.js --runInBand",
+    "db:migrate": "pnpm --filter @dataforge/api db:migrate",
+    "api": "node apps/api/dist/main.js",
     "clean": "pnpm -r clean",
     "dataforge": "node apps/cli/dist/main.js"
   },

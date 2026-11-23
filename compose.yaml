@@ -1,7 +1,9 @@
-# Local infrastructure for DataForge: one Apache Kafka broker in KRaft mode (no ZooKeeper).
-#   docker compose up -d --wait    start it and wait until it is healthy
-#   docker compose down            stop it and remove everything (no volume: topics are not kept)
-# KAFKA_HOST_PORT (default 9092) comes from the environment or a .env file next to this one.
+# Local infrastructure for DataForge: one Apache Kafka broker in KRaft mode (no ZooKeeper) and PostgreSQL.
+#   docker compose up -d --wait    start both and wait until they are healthy
+#   docker compose down            stop both; Kafka keeps nothing, PostgreSQL keeps its volume (run history)
+#   docker compose down -v         stop both and also delete the PostgreSQL volume (an empty database)
+# KAFKA_HOST_PORT (default 9092) and POSTGRES_HOST_PORT (default 5433) come from the environment or a
+# .env file next to this one.
 name: dataforge
 
 services:
@@ -31,3 +33,26 @@ services:
       timeout: 15s
       retries: 24
       start_period: 10s
+
+  postgres:
+    image: postgres:18.7-alpine
+    # 5433 on the host by default: a local PostgreSQL installation usually holds 5432.
+    ports:
+      - "${POSTGRES_HOST_PORT:-5433}:5432"
+    # Local development credentials only; DATABASE_URL in .env.example matches them.
+    environment:
+      POSTGRES_USER: dataforge
+      POSTGRES_PASSWORD: dataforge
+      POSTGRES_DB: dataforge
+    volumes:
+      # PostgreSQL 18 images keep their data under /var/lib/postgresql/<major>/docker.
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dataforge -d dataforge"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+      start_period: 5s
+
+volumes:
+  postgres-data:

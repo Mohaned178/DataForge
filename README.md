@@ -10,16 +10,16 @@ The value is not the generated data. It is finding data-processing bugs in a rep
 
 > **Status:** Milestones 1 (deterministic simulation core + CLI), 2 (chaos delivery planner), 3
 > (validation engine + reference targets, offline end to end), 4 (Kafka delivery + out-of-process
-> target) and 5 (event-time windows and late data) of 10 are approved. Next: Milestone 6,
-> persistence (PostgreSQL + Prisma) and the API foundation (NestJS). See
-> [docs/ROADMAP.md](docs/ROADMAP.md).
+> target), 5 (event-time windows and late data) and 6 (persistence with PostgreSQL + Prisma, and
+> the API foundation with NestJS) of 10 are approved. Next: Milestone 7, test executions through
+> the API. See [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Requirements
 
 - Node.js 24 LTS
 - pnpm 11 (`corepack enable` or `npm install -g pnpm`)
-- Docker Desktop with Docker Compose: for the Kafka broker (`deliver --transport kafka`,
-  `pnpm test:integration`); everything else runs without it
+- Docker Desktop with Docker Compose: for the Kafka broker (`deliver --transport kafka`),
+  PostgreSQL (the API) and `pnpm test:integration`; the CLI and `pnpm check` run without it
 
 ## Quick start (PowerShell)
 
@@ -123,6 +123,33 @@ canonical log and explains each short or long window by the events behind it: ar
 within the allowed lateness, during another window, or more than once. Profiles: `windowed-none`,
 `windowed-delays` (delays within the lateness and duplicates: `correct` passes), `late-data`.
 
+## HTTP API (PostgreSQL)
+
+The API stores scenarios, immutable scenario versions and simulation runs in PostgreSQL, generates
+runs in the background, and gives back exactly the files `dataforge generate` writes:
+
+```powershell
+docker compose up -d --wait      # Kafka and PostgreSQL (host port 5433)
+pnpm db:migrate                  # apply the database migrations
+pnpm build
+pnpm api                         # http://127.0.0.1:3000; Ctrl+C stops it
+```
+
+In a second window:
+
+```powershell
+$api = 'http://127.0.0.1:3000'
+$scenario = Invoke-RestMethod -Method Post -Uri "$api/scenarios" -ContentType 'application/json' -InFile scenarios\ecommerce-small.json
+$run = Invoke-RestMethod -Method Post -Uri "$api/runs" -ContentType 'application/json' -Body (@{ scenarioId = $scenario.id; seed = 42 } | ConvertTo-Json)
+Invoke-RestMethod "$api/runs/$($run.id)"                                   # queued, running, then succeeded
+(Invoke-RestMethod "$api/runs/$($run.id)/events?aggregateId=ord_000088").events
+Invoke-WebRequest -UseBasicParsing "$api/runs/$($run.id)/files/events.jsonl" -OutFile out\events.jsonl
+```
+
+The four files (`events.jsonl`, `expected-state.json`, `scenario.resolved.json`, `manifest.json`)
+downloaded into one directory form a run directory that `dataforge verify` and every other command
+accept. Endpoints and tables: [docs/data-formats.md](docs/data-formats.md).
+
 ## Development
 
 ```powershell
@@ -130,7 +157,7 @@ pnpm test        # all automated tests
 pnpm typecheck   # strict TypeScript
 pnpm lint        # ESLint, including the determinism guard for packages/*
 pnpm check       # all three (no Docker needed)
-pnpm test:integration   # build, then the Kafka integration tests (needs docker compose up -d --wait)
+pnpm test:integration   # build, then the Kafka and PostgreSQL integration tests (needs docker compose up -d --wait)
 ```
 
 Each milestone ships a manual verification guide (`docs/manual-verification/`) and a self-check that
@@ -142,6 +169,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verification\milesto
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verification\milestone-3.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verification\milestone-4.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verification\milestone-5.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verification\milestone-6.ps1
 ```
 
 ## Milestone workflow (Claude Code)
@@ -166,7 +194,8 @@ packages/targets       @dataforge/targets: reference targets and the in-memory t
 packages/kafka         @dataforge/kafka: Kafka record contract, plan executor, lag, consumer runner
 apps/cli               @dataforge/cli: the dataforge command
 apps/consumer          @dataforge/consumer: the reference consumer as a standalone process
-compose.yaml           local Kafka broker (KRaft)
+apps/api               @dataforge/api: the HTTP API (NestJS, Prisma, PostgreSQL)
+compose.yaml           local Kafka broker (KRaft) and PostgreSQL
 scenarios/             example scenario definitions
 chaos-profiles/        example chaos profiles
 scripts/verification/  per-milestone self-checks (PowerShell 5.1 and 7)
@@ -180,6 +209,7 @@ docs/                  specification, architecture, roadmap, data formats, manua
 - [Manual verification guides](docs/manual-verification/)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Data formats](docs/data-formats.md): scenario, events, expected state, manifest, chaos profile,
-  delivery plan and summary, actual state, target run, Kafka record and logs, validation report
+  delivery plan and summary, actual state, target run, Kafka record and logs, validation report,
+  database tables and HTTP API
 - [Roadmap](docs/ROADMAP.md)
 - [Architecture decision records](docs/adr/)

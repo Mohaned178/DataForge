@@ -33,8 +33,8 @@ jobs:
       - run: pnpm dataforge explain --run out/ci --plan out/ci-plan --event evt_ord_000088_2
 
   integration:
-    # The Kafka integration suite against the same pinned broker as local development (compose.yaml).
-    name: integration (Kafka)
+    # The integration suite against the same pinned Kafka broker and PostgreSQL as local development (compose.yaml).
+    name: integration (Kafka, PostgreSQL)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -50,7 +50,8 @@ jobs:
       - run: pnpm dataforge chaos plan --run out/ci --profile chaos-profiles/spec-example.json --chaos-seed 7 --out out/ci-plan
       - run: pnpm dataforge deliver --run out/ci --plan out/ci-plan --target correct --out out/ci-kafka --transport kafka
       - run: pnpm dataforge validate --run out/ci --actual out/ci-kafka/actual-state.json --plan out/ci-plan
+      - run: pnpm db:migrate
       - if: failure()
-        run: docker compose logs kafka
+        run: docker compose logs
       - if: always()
         run: docker compose down

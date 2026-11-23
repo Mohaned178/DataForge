@@ -1,65 +1,31 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { z } from 'zod';
 import {
   CanonicalLogViolationError,
-  EVENT_TYPES,
   EventLogParseError,
+  RUN_FILES,
   parseEventLog,
   replayCanonicalLog,
+  runManifestSchema,
   serializeExpectedState,
   sha256Hex,
   type CanonicalEvent,
-  type EventType,
   type ExpectedState,
+  type RunManifest,
 } from '@dataforge/core';
 import { UsageError } from './cli-io';
 
-export const RUN_FILES = {
-  events: 'events.jsonl',
-  expectedState: 'expected-state.json',
-  scenario: 'scenario.resolved.json',
-  manifest: 'manifest.json',
-} as const;
-
-export const CHECKSUMMED_FILES = [RUN_FILES.events, RUN_FILES.expectedState, RUN_FILES.scenario] as const;
-export type ChecksummedFile = (typeof CHECKSUMMED_FILES)[number];
-
-export const fileEntrySchema = z.strictObject({ sha256: z.string().regex(/^[0-9a-f]{64}$/), bytes: z.number().int().min(0) });
-
-export const runManifestSchema = z.strictObject({
-  format: z.literal('dataforge.simulation-run'),
-  formatVersion: z.literal(1),
-  engineVersion: z.string(),
-  eventSchemaVersion: z.number().int(),
-  seed: z.string(),
-  scenario: z.strictObject({ name: z.string(), hash: z.string() }),
-  simulation: z.strictObject({ epoch: z.string(), durationMs: z.number().int() }),
-  counts: z.strictObject({
-    events: z.number().int(),
-    eventsByType: z.record(z.enum(EVENT_TYPES), z.number().int()),
-  }),
-  files: z.strictObject({
-    [RUN_FILES.events]: fileEntrySchema,
-    [RUN_FILES.expectedState]: fileEntrySchema,
-    [RUN_FILES.scenario]: fileEntrySchema,
-  }),
-});
-
-export type RunManifest = z.output<typeof runManifestSchema>;
-export type FileEntry = z.output<typeof fileEntrySchema>;
-
-export function fileEntry(content: string): FileEntry {
-  return { sha256: sha256Hex(content), bytes: Buffer.byteLength(content, 'utf8') };
-}
-
-export function countEventsByType(events: readonly CanonicalEvent[]): Record<EventType, number> {
-  const counts = Object.fromEntries(EVENT_TYPES.map((type) => [type, 0])) as Record<EventType, number>;
-  for (const event of events) {
-    counts[event.type] += 1;
-  }
-  return counts;
-}
+// The run-file format lives in @dataforge/core, shared with the API; the CLI's modules import it from here.
+export {
+  CHECKSUMMED_FILES,
+  RUN_FILES,
+  fileEntry,
+  fileEntrySchema,
+  runManifestSchema,
+  type ChecksummedFile,
+  type FileEntry,
+  type RunManifest,
+} from '@dataforge/core';
 
 /** Creates the output directory, refusing to mix a new run into a non-empty directory unless forced. */
 export function prepareOutputDirectory(directory: string, force: boolean, files = 'run files'): void {

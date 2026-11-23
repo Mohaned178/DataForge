@@ -17,12 +17,12 @@ packages/
 apps/
   cli/           @dataforge/cli          Command-line interface (Milestone 1)
   consumer/      @dataforge/consumer     The reference consumer as a standalone process (Milestone 4)
-  api/           @dataforge/api          NestJS + Prisma (Milestones 6, 7, planned)
+  api/           @dataforge/api          HTTP API: NestJS + Prisma + PostgreSQL; scenarios, runs, run history (Milestone 6)
   web/           @dataforge/web          React + Vite (Milestones 8-9, planned)
 scenarios/                               Example scenario definitions
 chaos-profiles/                          Example chaos profiles
 scripts/verification/                    Per-milestone self-checks of the manual verification
-compose.yaml                             Local infrastructure: one Kafka broker in KRaft mode
+compose.yaml                             Local infrastructure: one Kafka broker in KRaft mode and PostgreSQL
 docs/                                    Specification, architecture, roadmap, formats, ADRs
 ```
 
@@ -30,6 +30,7 @@ Dependency direction (enforced by package dependencies, plus ESLint for the four
 
 ```text
 apps/web            ──HTTP──▶ apps/api (planned)
+apps/api            ──▶ core, NestJS, Prisma ──▶ PostgreSQL
 apps/cli            ──▶ kafka, validation, targets, chaos, core   (starts apps/consumer as a child process)
 apps/consumer       ──▶ kafka, targets, core
 packages/kafka      ──▶ targets, chaos, core, kafkajs
@@ -50,6 +51,8 @@ system, network, process, NestJS, Prisma, Kafka or React modules, and may not ca
 `packages/kafka` is the one package allowed to import a Kafka client (only `client.ts` and
 `consumer-runner.ts` do); its record contract, executor, lag arithmetic, log formats and process
 protocol are held to the same rules, and the executor reads time only from an injected clock.
+`apps/api` is the one place that imports NestJS and Prisma; it builds run files only through
+`@dataforge/core`.
 
 ## Inside `@dataforge/core`
 
@@ -103,6 +106,26 @@ receives from any transport: key `aggregateId`, the canonical event, attempt hea
 | `kafka/src/process-protocol.ts` | The IPC messages between the delivering process and the consumer process. |
 | `consumer/src/main.ts` | The consumer process: options, `ConsumerRunner` with a reference target, finish on IPC or Ctrl+C, output files. |
 | `cli/src/commands/deliver-kafka.ts` | Topic and group per execution, consumer process, executor, zero lag, finish, output files. |
+
+## Inside `@dataforge/api`
+
+The API wraps the engine; it adds no simulation logic. The four run files are built by
+`buildRunFiles` in `@dataforge/core` (`run/run-files.ts`), the same function `dataforge generate`
+uses, so a run downloaded from the API is a run directory the CLI accepts.
+
+| Module | Responsibility |
+| --- | --- |
+| `prisma/schema.prisma`, `prisma/migrations/` | Tables, constraints, the immutability triggers (ADR-0011). |
+| `src/main.ts` | The process: configuration, database checks (exit 3 when unreachable or not migrated), listen. |
+| `src/app.ts` | `AppModule` and `createApiApplication`: Nest with the Standard Schema validation pipe, shared by `main.ts` and the tests. |
+| `src/config.ts` | `DATABASE_URL`, `API_HOST`, `API_PORT`, Zod-validated. |
+| `src/database/` | `PrismaService` (Prisma 7 client with the PostgreSQL adapter) and `checkDatabase` (reachable, migrations applied). |
+| `src/scenarios/` | Scenarios and immutable versions: create, list, add a version (or return the identical one). |
+| `src/runs/runs.service.ts` | Start a run, history, event pages, and run files rebuilt from rows and checked against the recorded checksums. |
+| `src/runs/run-runner.ts` | `RunRunner`: the in-process background queue, one run at a time, recovery of unfinished runs on start-up. |
+| `src/runs/prisma-run-store.ts` | Run status in PostgreSQL: claim, complete (events by `unnest`, snapshot, manifest, one transaction), fail, requeue. |
+| `src/runs/event-rows.ts` | Canonical events to column arrays and back; a row that is no longer a canonical event is an integrity error. |
+| `scripts/recreate-database.js` | Drops and recreates a scratch database (`*_test`, `*_selfcheck`) and migrates it. |
 
 ## Data flow (Milestone 1)
 
@@ -229,6 +252,25 @@ validate: expected windows = computeExpectedWindows(canonical log, sizeMs)   (th
 Inputs without a windowing contract take none of these paths, and produce the same bytes as in
 Milestone 4.
 
+## Data flow (Milestone 6)
+
+```text
+POST /scenarios (a scenario file) ── scenarioSchema ─▶ scenario + scenario_version 1 (resolved definition, hash)
+POST /scenarios/:id/versions ──────────────────────▶ version n+1, or the identical existing version
+POST /runs {scenarioId, version?, seed} ─▶ simulation_run (queued) ─▶ 202
+                                                    │ RunRunner (in process, one at a time)
+                                                    ▼
+          claim: queued ─▶ running (conditional update)
+          simulate(definition, seed) + buildRunFiles      (the same code as dataforge generate)
+          one transaction: canonical_event rows (unnest, 5,000 per statement),
+                           expected_state_snapshot, manifest + summary, status succeeded
+          (failure ─▶ failed + error; a killed API leaves queued/running ─▶ requeued on start-up)
+                                                    │
+GET /runs, /runs/:id, /runs/:id/events ◀────────────┤
+GET /runs/:id/files/<name> ◀─ rebuild from rows with the core serializers,
+                              compare with the manifest's checksum ─▶ exact bytes, or 500 Run Integrity Error
+```
+
 ## Key concepts
 
 - **Canonical event**: a business fact in the simulated world, identified by `eventId`, positioned
@@ -256,6 +298,10 @@ Milestone 4.
   that window arriving later arrives *after close*. Expected windows are the true values (every
   event counted once in the window of its event time); dropping a late event is a finding, explained
   by its late arrival.
+- **Scenario version and stored run**: a scenario version is an immutable, resolved scenario
+  definition; a stored run is one scenario version simulated with one seed by one engine version. Its
+  canonical events are rows, never updated, and its files are rebuilt from them and checked against
+  the checksums recorded when it was generated.
 - **Engine version**: `ENGINE_VERSION` names the generation algorithm. Any change in output for the
   same scenario and seed requires a version bump; the golden test enforces this.
 

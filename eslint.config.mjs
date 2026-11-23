@@ -44,7 +44,7 @@ const coreForbiddenImports = {
 };
 
 export default defineConfig(
-  { ignores: ['**/dist/**', '**/node_modules/**', '**/coverage/**', 'out/**'] },
+  { ignores: ['**/dist/**', '**/node_modules/**', '**/coverage/**', 'out/**', 'apps/api/src/generated/**'] },
   js.configs.recommended,
   tseslint.configs.recommendedTypeChecked,
   {
@@ -67,7 +67,7 @@ export default defineConfig(
     files: ['**/*.js'],
     languageOptions: {
       sourceType: 'commonjs',
-      globals: { require: 'readonly', module: 'writable', process: 'readonly', __dirname: 'readonly' },
+      globals: { require: 'readonly', module: 'writable', process: 'readonly', __dirname: 'readonly', URL: 'readonly' },
     },
     rules: { '@typescript-eslint/no-require-imports': 'off' },
   },

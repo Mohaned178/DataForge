@@ -1,0 +1,33 @@
+{
+  "name": "@dataforge/api",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The DataForge HTTP API (NestJS + Prisma + PostgreSQL): scenarios, immutable scenario versions, simulation runs processed in the background, run history, stored canonical events and run file downloads.",
+  "main": "./dist/main.js",
+  "scripts": {
+    "postinstall": "prisma generate --no-hints",
+    "build": "prisma generate --no-hints && tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "db:migrate": "prisma migrate deploy",
+    "start": "node dist/main.js",
+    "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\""
+  },
+  "dependencies": {
+    "@dataforge/core": "workspace:*",
+    "@nestjs/common": "12.6.0",
+    "@nestjs/core": "12.6.0",
+    "@nestjs/platform-express": "12.6.0",
+    "@prisma/adapter-pg": "7.10.1",
+    "@prisma/client": "7.10.1",
+    "reflect-metadata": "0.2.2",
+    "rxjs": "7.8.2",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@nestjs/testing": "12.6.0",
+    "@types/supertest": "7.2.1",
+    "pg": "8.23.1",
+    "prisma": "7.10.1",
+    "supertest": "7.3.2"
+  }
+}

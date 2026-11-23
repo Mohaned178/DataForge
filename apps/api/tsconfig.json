@@ -1,0 +1,13 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["node", "jest"],
+    "noEmit": true,
+    "experimentalDecorators": true,
+    "emitDecoratorMetadata": true,
+    "paths": {
+      "@dataforge/core": ["../../packages/core/src/index.ts"]
+    }
+  },
+  "include": ["src", "test", "integration", "prisma.config.ts"]
+}

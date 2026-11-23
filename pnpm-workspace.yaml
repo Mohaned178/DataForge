@@ -4,5 +4,9 @@ packages:
 
 # pnpm 11 refuses to install until every dependency build script is explicitly allowed or denied.
 # @parcel/watcher (Jest watch mode) ships prebuilt binaries; its script only compiles from source as a fallback.
+# prisma and @prisma/engines: their scripts only prefetch engine files, which the Prisma CLI downloads on
+# first use; the Prisma 7 client needs no native engine at all (ADR-0011).
 allowBuilds:
   '@parcel/watcher': false
+  '@prisma/engines': false
+  prisma: false
