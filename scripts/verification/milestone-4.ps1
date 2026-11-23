@@ -90,9 +90,9 @@ Test-Case 'MV-4.2' 'Start Kafka and run the integration tests' {
     Assert-Match $ps.Text 'kafka apache/kafka:4\.3\.2 Up .*\(healthy\)' 'broker healthy'
     $it = Invoke-Pnpm @('test:integration')
     Assert-Exit $it 0 'pnpm test:integration'
-    # Counts as of Milestone 7 (D-5.2, D-7.3): later milestones add integration suites to the same run.
-    Assert-Match $it.Text 'Test Suites:\s+9 passed, 9 total' 'integration suites'
-    Assert-Match $it.Text 'Tests:\s+96 passed, 96 total' 'integration tests'
+    # Counts as of Milestone 7 (D-5.2, D-7.3, Milestone 8): later milestones add integration suites to the same run.
+    Assert-Match $it.Text 'Test Suites:\s+10 passed, 10 total' 'integration suites'
+    Assert-Match $it.Text 'Tests:\s+112 passed, 112 total' 'integration tests'
 }
 
 Test-Case 'MV-4.3' 'Zero faults through Kafka' {

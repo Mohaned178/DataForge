@@ -1,5 +1,6 @@
 import js from '@eslint/js';
 import { defineConfig } from 'eslint/config';
+import reactHooks from 'eslint-plugin-react-hooks';
 import tseslint from 'typescript-eslint';
 
 const nondeterministicProperties = [
@@ -101,6 +102,36 @@ export default defineConfig(
       'no-restricted-properties': ['error', ...nondeterministicProperties],
       'no-restricted-syntax': ['error', ...nondeterministicSyntax],
       'no-restricted-imports': ['error', coreForbiddenImports],
+    },
+  },
+  {
+    // Vite's own configuration runs in Node and has its own tsconfig (tsconfig.node.json, checked by
+    // "pnpm typecheck"); the type-aware project service only knows the browser tsconfig.
+    files: ['apps/web/*.config.mts'],
+    extends: [tseslint.configs.disableTypeChecked],
+  },
+  {
+    // Plain Node scripts of the web app (fixture capture).
+    files: ['apps/web/scripts/*.mjs'],
+    languageOptions: { globals: { process: 'readonly', fetch: 'readonly', setTimeout: 'readonly', console: 'readonly' } },
+  },
+  {
+    // @dataforge/web runs in the browser and talks to the API over HTTP only: no engine, no Node, no
+    // server framework, no database or Kafka client. Its response schemas (src/api) are the contract.
+    files: ['apps/web/src/**/*.{ts,tsx}'],
+    extends: [reactHooks.configs.flat.recommended],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            {
+              group: ['@dataforge/*', 'node:*', '@nestjs/*', '@prisma/*', 'prisma', 'kafkajs'],
+              message: 'The web UI reads the HTTP API only. Describe what it reads in src/api (Zod), do not import server or engine code.',
+            },
+          ],
+        },
+      ],
     },
   },
 );

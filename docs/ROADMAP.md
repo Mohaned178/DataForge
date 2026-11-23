@@ -15,7 +15,7 @@ whenever implementation changes the plan. The workflow is driven by the `/datafo
 | 5 | Event-time windows and late data | **Approved 2026-11-22** |
 | 6 | Persistence (PostgreSQL + Prisma) + API foundation (NestJS) | **Approved 2026-11-23** |
 | 7 | Test executions through the API | **Approved 2026-11-23** |
-| 8 | Web UI: run history and report explorer | Planned |
+| 8 | Web UI: run history and report explorer | **Approved 2026-11-23** |
 | 9 | Web UI: configure and launch + Playwright end-to-end | Planned |
 | 10 | Hardening and scale | Planned |
 
@@ -959,11 +959,214 @@ the runner covers the stop).
 
 **Approved** 2026-11-23.
 
+---
+
 ## Milestone 8: Web UI: run history and report explorer
 
-React + Vite. Run list, report findings, and a per-entity drill-down that shows the canonical
-timeline next to the delivery timeline (where the explanation of each failure lives). Vitest + React
-Testing Library.
+**Objective.** See in a browser what the API stores, and understand a failed test without reading
+JSON: browse run and execution history, open an execution's report (verdict, counts, root causes,
+findings, window findings) and, from any finding, drill down to one aggregate with its **canonical
+timeline next to its delivery timeline**, the place where the explanation of a wrong result lives
+(an event that arrived before its predecessor, a delayed or duplicated delivery, a lost event). The UI
+is **read-only** and **the API does not change**: every page reads endpoints Milestones 6 and 7 built.
+
+**Included.**
+
+- **`@dataforge/web`** (new app, `apps/web`): React 19, TypeScript (strict, as everywhere), Vite 8,
+  React Router 8, plain CSS (custom properties, light and dark by `prefers-color-scheme`), no UI kit.
+  The URL is the state: filters, paging and the open finding live in the query string, so every view
+  is a link that can be pasted, bookmarked and reloaded.
+- **API client** (`src/api`): the one module that knows endpoint paths and response shapes. It reads
+  `/api/...` (the dev and preview servers proxy it to the API), turns failures into three kinds the
+  pages show differently, and validates every response with Zod schemas that describe **only what the
+  pages read** (unknown fields are ignored, so an API that adds a field does not break the UI; a
+  changed or missing field fails with its path):
+  - `ApiUnreachable`: the API cannot be reached (network failure, or the proxy's `502`);
+  - `ApiError`: the API answered `4xx`/`5xx` with its error shape (`404` unknown id, `409` not ready,
+    `500` integrity error shown as a distinct panel: stored data no longer matches its checksum);
+  - `ResponseShapeError`: the API answered, but not with what this UI version expects.
+- **`useResource`**: a small data-loading hook (loading, data, error, reload; the previous request is
+  aborted when its inputs change). No polling (live monitoring is Milestone 9); a Reload button
+  refreshes a queued or running execution.
+- **Pages** (routes):
+  - `/runs`: run history, newest first (scenario and version, seed, status, events, requested at,
+    duration); filters `status`, `scenarioId`; paging.
+  - `/runs/:runId`: inputs and engine version, status and error, file checksums, events by type,
+    the expected-state summary, the executions of this run (link), and the stored canonical events
+    (filters `type`, `aggregateId`; paged by sequence); choosing an event's aggregate filters the table to
+    it (a timeline needs an execution, which a run page does not have).
+  - `/executions`: execution history, newest first (run, profile and version, chaos seed, target,
+    status, verdict, attempts, findings); filters `status`, `verdict`, `runId`, `chaosProfileId`; paging.
+  - `/executions/:executionId`: **the report explorer.** Header (status, verdict, error, target,
+    timings); what the delivery did (attempts by kind and outcome, each fault's configured against
+    observed rate, ordering, windowing arrivals, losses; the reference target's result and the Kafka
+    run when present); the validation report (entities checked, findings per category, each linking to the
+    findings of that category; root causes, each linking to the timeline of its event); the findings table (filters `category`, `entityType`,
+    `entityId`; paged), each finding expandable to its message, expected-against-actual differences and
+    causes, with links into the timeline; the window findings the same way; the downloadable files with
+    their checksums. Each status has its own view: `queued` and `running` (status and Reload),
+    `awaiting_actual_state` (what DataForge waits for and the request that completes it), `failed`
+    (the error), `completed`.
+  - `/executions/:executionId/aggregates/:aggregateId`: **the drill-down.** Two timelines of one
+    aggregate (an order with its payments and shipment, a customer, a product), joined by `eventId`:
+    - *canonical*: its events in version order (version, type, event time as time since the scenario
+      epoch, a summary of the payload, the full payload on demand), from `GET /runs/:id/events`;
+    - *delivery*: its attempts in delivery order (delivery position, attempt, kind, scheduled time
+      and the shift from the event time, the faults in words, planned outcome and, through Kafka,
+      partition, offset and drift), from `GET /executions/:id/attempts`;
+    - a **lanes diagram** (events on one lane in version order, deliveries on the other in delivery
+      order, a line from each event to each of its deliveries): crossing lines are inversions, an event
+      without a line is lost, several lines are duplicates or retries; focusing or hovering an event
+      highlights it in both timelines and the diagram;
+    - per event: *out of order* (a later version reached the target first, the definition of the
+      delivery summary's `ordering`), *lost*, *duplicated*, *retried*, *delayed*, *late*;
+    - the finding it was opened from (`?finding=<ordinal>` or `?windowFinding=<ordinal>`, the API's
+      0-based `ordinal`, shown 1-based), with its
+      differences and causes, and `?event=<eventId>` to focus an event.
+    From a finding the links go to the entity's own aggregate first (an order for an order, a payment or
+    a shipment; the customer or product itself), then to the aggregate of each cause event.
+- **Configuration:** `WEB_HOST` (default `127.0.0.1`), `WEB_PORT` (default `5173`) and `WEB_API_URL`
+  (default `http://<API_HOST>:<API_PORT>`, so a `.env` that configures the API configures the UI), read
+  from the repository's `.env`, documented in `.env.example`. Root scripts: `pnpm web` (serves the
+  built UI, `vite preview`), `pnpm web:dev` (development server with hot reload).
+- **Out of scope:** polling and live monitoring, launching runs or executions, creating or editing
+  scenarios and profiles (Milestone 9); charts and React Flow (spec section 5 says "when needed", and
+  nothing here needs them); the API serving the built UI, production hosting, authentication
+  (Milestone 10 and beyond). No API change.
+
+**Architectural decisions** (ADR-0013).
+
+| Question | Options | Choice |
+| --- | --- | --- |
+| Front-end toolchain | the spec's React + Vite + Vitest + React Testing Library at the versions available | **React 19.3.1, Vite 8.3.8 with `@vitejs/plugin-react` 6.3.0, React Router 8.5.2, Vitest 5.1.1, jsdom 31.0.1, React Testing Library 16.3.3, jest-dom 8.0.0, user-event 14.6.13**, all pinned. Spike on 2026-11-23 in this repository: `pnpm install` needs no build-script approval, `tsc` (strict, `exactOptionalPropertyTypes`, `noUncheckedIndexedAccess` kept), `vite build`, Vitest in jsdom and type-aware ESLint on `.tsx` all pass. TypeScript stays 6.0.3 (ADR-0005). |
+| How the browser reaches the API | CORS on the API; the API serves the built UI; a Vite proxy | **A Vite proxy under `/api`** (dev server and preview), the prefix removed before the API sees the path. No API change, no CORS, so the API stays reachable from this machine only (D-6.2). The prefix is needed: the API's paths (`/runs`, `/executions/:id`) are also the UI's routes, and a proxy by bare path would send a reload of `/executions/<id>` to the API. Spike: deep links answer with the app shell; with the API stopped the proxy answers `502 text/plain` with no body, which the client tells apart from the API's JSON errors. |
+| Types of API responses | `import type` from the packages and the API's view files; Zod schemas in the web app | **Zod schemas in the web app**, lenient and validated at runtime (spec 10: validate external inputs), with a **contract test** in the integration suite that parses real API responses with the same schemas. Spike: importing the packages' types pulls in `core` sources that need Node's types (`node:crypto`, `Buffer`), which would let browser code use `process` unnoticed, and the run and execution views declare `Date` where JSON carries strings. A lint rule keeps `@dataforge/*`, `node:*`, NestJS, Prisma and KafkaJS out of the web app. |
+| Data loading | TanStack Query; a small hook | **A small `useResource` hook** (about 50 lines): this milestone reads a handful of endpoints, with no cache sharing, mutation or polling to justify a dependency. Milestone 9 (launch and live monitoring) may adopt TanStack Query and replace one file. |
+| Routing | React Router; hash routing; none | **React Router, browser history**, filters in the query string, because the roadmap's views are meant to be linked (a failing finding sent to a colleague). |
+| Styling and charts | Tailwind, a component kit, a chart library, React Flow; plain CSS and hand-written SVG | **Plain CSS and one hand-written SVG** (the lanes diagram). No dependency for what a table, a badge and a few lines do; revisit when a chart or the entity dependency graph is needed. |
+| Aligning the two timelines | by time on one axis; each in its own order, joined by `eventId` | **Each in its own order, joined by `eventId`.** Delays and reorders move deliveries by hours, so a true time axis crushes the events minutes apart; the two orders make an inversion a visible crossing, with exact times in the tables. |
+| What "out of order" means | any attempt before a predecessor's; the summary's definition | **The delivery summary's definition**: an event whose *first delivered* attempt is later than that of a later version of its aggregate; failed attempts do not count, lost events are left out. The contract test sums the UI's classification over every aggregate of a real execution and requires it to equal the summary's `outOfOrderEvents`. |
+| Entity to aggregate | add an endpoint; read it off the causes; derive from the ID | **Derive from the ID, tested:** `ord_n`, `cus_n`, `prd_n` are their own aggregates; `pay_n_k` and `shp_n` belong to `ord_n` (ADR-0004). An unexplained finding has no causes to read it from. Window causes carry an `eventId` only, so their aggregate comes from `GET .../attempts?eventId=`, not from parsing the ID. |
+| UI tests | mock modules; stub `fetch`; run against the API | **Stub `fetch` at the boundary** in Vitest, with fixtures captured from real executions (deterministic seeds), so the client, schemas and pages run unmodified; the contract test then holds the fixtures' shape to the real API. Browser end-to-end tests are Milestone 9 (Playwright). |
+| Running the tests | a third root command; fold into `pnpm test` | **`pnpm test` = `pnpm test:node` (Jest) + `pnpm test:web` (Vitest).** `pnpm check` and CI cover the UI without a new step; Jest ignores `apps/web`. The Jest totals pinned by the self-checks do not change. |
+
+**Dependencies.** The Milestone 6 and 7 HTTP API, unchanged: `GET /runs`, `/runs/:id`,
+`/runs/:id/events`, `/executions`, `/executions/:id`, `/executions/:id/attempts`, `/report`,
+`/findings`, `/window-findings`, `/files/<name>`. New third-party dependencies and why: `react`,
+`react-dom` 19.3.1 (the UI), `react-router` 8.5.2 (routes as links), `vite` 8.3.8 and
+`@vitejs/plugin-react` 6.3.0 (dev server, bundler, proxy), `vitest` 5.1.1 and `jsdom` 31.0.1 (component
+tests), `@testing-library/react` 16.3.3, `@testing-library/dom` 10.4.2 (its peer),
+`@testing-library/jest-dom` 8.0.0 and `@testing-library/user-event` 14.6.13 (queries, matchers and
+real user input), `@types/react` and `@types/react-dom` 19.3.0 (types), `eslint-plugin-react-hooks`
+7.1.1 (the rules of hooks, root dev dependency). `zod` 4.6.7 is already used by the other packages.
+
+**Code and documentation changes.** New `apps/web` (client, schemas, hook, pages, components, styles,
+fixtures); root `package.json` (`test`, `test:node`, `test:web`, `web`, `web:dev`); `jest.config.js`
+(ignores `apps/web`); `eslint.config.mjs` (hooks rules and the import boundary for `apps/web/src`);
+`.env.example`; the integration suite gains the contract test; ADR-0013; `ARCHITECTURE.md` (the
+`apps/web` module, the dependency arrow, the data flow); `data-formats.md` (the UI's routes and
+query parameters); README; manual verification guide and self-check. The self-checks of Milestones 4, 6
+and 7 pin the integration totals, which the contract test changes; they are updated as D-5.2 did for
+Milestone 4.
+
+**Automated tests.**
+
+- Unit and component (`pnpm test:web`, Vitest, jsdom, no API): the client (every failure kind: network
+  error, `502` without a body, API error shapes, `500` integrity error, a response with a missing
+  field reported by path, extra fields ignored); schemas against the fixtures; entity to aggregate;
+  the fault descriptions; the out-of-order classification (reorder, late, delay, duplicate, retry,
+  lost; equals the fixtures' `ordering` summary); the timeline join; time formatting; query string
+  to filters and back. Pages with a stubbed `fetch`: run history (rows, status filter in the URL,
+  paging, empty), run detail, execution history, the report explorer for a passing, a failing, a
+  windowed, a queued, a running, an awaiting and a failed execution, findings filter by category, root
+  causes linking to their timelines, a finding expanding to differences and causes, window findings, the drill-down (both
+  timelines, focus highlights the event on both sides, out-of-order and lost markers, Kafka outcome,
+  the finding it was opened from), and the error states (API unreachable, unknown id, not ready,
+  integrity error).
+- Integration (`pnpm test:integration`, real PostgreSQL and Kafka): the contract test. For a
+  run and executions started through the API (the small scenario; `none`, `spec-example` with the
+  naive target, `late-data` for window findings, one through Kafka), every response the UI reads parses
+  with the web schemas; the UI's out-of-order classification summed over every aggregate equals the
+  delivery summary's `outOfOrderEvents`; every finding's entity maps to an aggregate that has events.
+
+**Acceptance criteria.**
+
+- `pnpm web` serves the UI; a reload of any route (for example `/executions/<id>`) shows that page,
+  not API JSON; `/api/health` answers through the same server.
+- Run history and execution history list what the API holds, newest first, with working filters and
+  paging, kept in the URL.
+- The report explorer shows, for a failing execution, the verdict, the findings per category, the
+  root causes and every finding with its differences and causes; filtering by category changes the
+  table and the URL, and each root cause links to its timeline; window findings appear for a windowed
+  execution.
+- From a finding, the drill-down shows the canonical and the delivery timeline of the entity's own
+  aggregate and of each cause's aggregate, joined by event, with out-of-order, lost, duplicated, delayed
+  and late events marked; the UI's out-of-order count over a real execution equals the delivery
+  summary's.
+- Every execution status has a view that says what it means; an unreachable API, an unknown id, a
+  not-ready resource and an integrity error are each reported distinctly, with what to do.
+- Every response the UI reads is validated; the contract test holds the schemas to the real API.
+- The web app imports nothing from the engine, Node or the server frameworks (lint-enforced);
+  `pnpm check` runs the UI's tests; the API and the CLI are unchanged.
+
+**Manual verification.** `docs/manual-verification/milestone-8.md` (MV-8.1 to MV-8.15: install and
+checks; services, the migration and the integration suite; start the API and the UI, deep links and the
+`/api` proxy; create the data; run history and run detail; execution history and filters; a passing
+execution; a failing execution (the spec's example, naive target), its report, findings and root causes; the
+drill-down of a reordered order and of a double charge; window findings under late data; an execution through
+Kafka (partition and offset); a lost event; failure states (unknown and malformed id, tampered data, API
+stopped); the import boundary; a running execution and its refused timeline). Self-check: `scripts/verification/milestone-8.ps1` (own database, own ports
+3108 and 5208, own work directory). A script cannot click, so for each page it opens the page in headless
+Microsoft Edge or Google Chrome, lets it load its data and checks the text it rendered; layout, colour and
+the diagram are left to the "Look for" lines of the guide (`-NoBrowser` skips the rendered checks). 15 of 15 cases
+passing in PowerShell 7.6 and 14 of 14 (MV-8.1 skipped by `-SkipInstall`) in Windows PowerShell 5.1 on 2026-11-23, with
+Docker Desktop, the Compose services and headless Microsoft Edge. The guide's command blocks were run once,
+literally, in one Windows PowerShell 5.1 session, with three substitutions that protect your data: a scratch
+database instead of `dataforge`, no `docker compose down -v`, and `Start-Process` recording the URLs instead of opening
+tabs (the two servers ran as background processes). The Milestone 7 self-check still passes with its updated pins (16
+of 16, MV-7.1 skipped); the Milestone 4 and 6 self-checks had only the same two numbers edited and were not re-run.
+
+**Implementation notes** (changes to the plan above, with the reason).
+
+- Root causes link to their timelines instead of filtering the findings: the API has no root-cause filter,
+  filtering would mean loading every finding into the browser, and the validator already groups findings by
+  their first cause. The category counts link to the findings of that category.
+- On a run page, an event's aggregate filters the events table. A timeline needs an execution, and a run page
+  has none.
+- Facts the real API showed while the UI was built: a malformed ID is `400` ("must be a ... UUID"), only a
+  well-formed unknown ID is `404` (the UI handles both); a run's `files` map does not list `manifest.json`, so
+  the page adds it; finding `ordinal` is 0-based; a late fault can be anchored behind an event of *another*
+  order (`ord_000012`'s late payment waits behind `evt_ord_000013_3`).
+- Vite's configuration is `vite.config.mts` and the web package has no `"type": "module"`, so the API's Jest
+  integration test can load the UI's pure modules (`src/api/schemas.ts`, `src/lib/*`) without file extensions in
+  their imports. `apps/web/*.config.mts` is excluded from type-aware ESLint (the project service knows only the
+  browser tsconfig); `tsc -p tsconfig.node.json` checks it.
+- The two timelines stack below 1,400 px of window width and the lanes diagram is capped at 820 px: both
+  changes came from looking at the pages rendered by Edge, where the delivery table's last column was clipped
+  and the diagram's text scaled to twice its size.
+- The Chrome extension was not connected during the dry run, so the pages were viewed through headless Edge
+  (screenshots, which showed the system's dark theme only, and the rendered text); the light theme and a
+  phone-width layout were not looked at.
+- The integration run is now 10 suites and 112 tests (the contract test adds one suite and 16 tests). The
+  self-checks of Milestones 4, 6 and 7 pin those totals and were updated, as D-5.2 did for Milestone 4. `pnpm
+  check` runs Jest (38 suites, 451 tests, unchanged) and then Vitest (7 files, 108 tests).
+
+**Product-owner decisions** (2026-11-23, the recommendations accepted):
+
+- D-8.1: the UI stays on its own web server with a proxy under `/api`, the API unchanged (no CORS, still reachable
+  from this machine only). Serving the UI from the API is a question for Milestone 10 (ADR-0013, decision 2).
+- D-8.2: pages show stored data after checking that each row is still a valid event, attempt or finding; only the
+  file downloads compare with the recorded checksums. A "verify integrity" action may be added later (ADR-0013,
+  decision 10).
+- D-8.3: no chart library and no React Flow for now: tables and one hand-written diagram. Revisit for a per-window
+  chart or the entity dependency graph (ADR-0013, decision 6).
+
+Self-check re-run before approval: 15 of 15 in PowerShell 7.6 (full), 14 of 14 in Windows PowerShell 5.1
+(`-SkipInstall`, MV-8.1 skipped), on 2026-11-23, after `pnpm build`.
+
+**Approved** 2026-11-23.
+
+---
 
 ## Milestone 9: Web UI: configure and launch
 
@@ -998,6 +1201,10 @@ None at the moment.
 | An execution plans, delivers in memory and validates on the API's event loop. | The API answers nothing else meanwhile; not measured at the specification's size through the API. | Spec 5: no worker threads before profiling; Kafka delivery is asynchronous. Profile in Milestone 10 (ADR-0012). |
 | An external pipeline must commit offsets after handling a record. | Zero lag would not mean "done"; its state could be incomplete when submitted. | Documented with the external API; DataForge checks for an active member and zero lag before the first record (ADR-0012, decision 7). |
 | Execution work directories and Kafka topics accumulate. | Disk use grows with every Kafka execution. | Kept on purpose for inspection (D-4.2); `docker compose down` removes the topics, the work directories are removed by hand. A clean-up command is a Milestone 10 candidate. |
+| The web UI is served by `vite preview`. | Fine on this machine; not a production server, no authentication. | The API stays on 127.0.0.1 (D-6.2) and the UI is reachable only from this machine by default (`WEB_HOST`). Serving the UI from the API and production hosting are Milestone 10 questions (D-8.1). |
+| The UI and the API change together. | A changed response makes a page say "Unexpected response from the API". | Zod schemas of only what the pages read, and a contract test against the real API in the integration suite (ADR-0013, decision 3). |
+| The UI derives an entity's aggregate from its ID (`pay_n_k` is in `ord_n`). | A new entity type or ID scheme would leave findings without a timeline link. | One tested function (`src/lib/entity.ts`); the contract test requires every finding of two executions to map to an aggregate that has events. |
+| The self-check's rendered-page checks need Microsoft Edge or Google Chrome. | Without one they fail (or are skipped with `-NoBrowser`). | Edge ships with Windows; the script looks in the usual folders of both. |
 | Docker-backed checks need Docker Desktop running. | Without it, `deliver --transport kafka`, the API and `pnpm test:integration` cannot run (exit code 3 and a clear message, never a silent pass). | `pnpm check` needs no Docker; CI runs the integration suite against the Compose services (Kafka and PostgreSQL) on every push. |
 | Root-cause hints rely on a hand-written dependency model of the e-commerce domain. | New event types could leave findings under-explained (reported as "not explained by delivery"). | ADR-0008 names the rule; the end-to-end tests assert that every naive finding is explained under four profiles and on the spec-sized scenario, so a gap shows up as a failing test. |
 | The in-memory transport ignores wall-clock time (only order matters). | A user's pipeline that uses wall-clock processing time cannot be tested offline. | The reference targets take processing time from the delivery clock (`scheduledDeliveryTimeMs` header), so windows are tested the same in process and through Kafka (ADR-0010). Kafka delivery can also play the plan in compressed wall-clock time (`--speed`). |

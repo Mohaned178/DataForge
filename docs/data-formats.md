@@ -709,3 +709,26 @@ An execution:
   "files": { "delivery-plan.jsonl": { "sha256": "...", "bytes": 167512 }, "...": {} }   // what can be downloaded now
 }
 ```
+
+## Web UI (`pnpm web`, default `http://127.0.0.1:5173`, Milestone 8)
+
+The UI is read-only and uses no endpoint beyond those above. The web server forwards `/api/<path>` to the API's
+`/<path>`; every other address is the application. Every view is an address; filters, pages and the open
+finding are query parameters.
+
+| Route | Shows | Query parameters |
+| --- | --- | --- |
+| `/` | Redirects to `/executions`. | |
+| `/runs` | Run history, newest first. | `status`, `scenarioId`, `offset` |
+| `/runs/:runId` | The run, its expected state and files, its executions, its stored canonical events. | `type`, `aggregateId`, `fromSequence` (events) |
+| `/executions` | Execution history, newest first. | `status`, `verdict`, `runId`, `chaosProfileId`, `offset` |
+| `/executions/:executionId` | The report explorer: summary, delivery, validation report, findings, window findings, files. | `category`, `entityType`, `entityId`, `offset`, `open` (finding ordinal); `wcategory`, `woffset`, `wopen` (window findings) |
+| `/executions/:executionId/aggregates/:aggregateId` | The drill-down: canonical and delivery timelines of one aggregate. | `finding` or `windowFinding` (the ordinal it was opened from, 0-based), `event` (the focused event ID) |
+| `/executions/:executionId/events/:eventId` | Resolves the event's aggregate through `GET /executions/:id/attempts?eventId=` and redirects to the drill-down with `event` set. | the others are kept |
+
+Finding ordinals are the API's `ordinal`: 0-based, in report order. The UI shows them 1-based ("finding 13" is
+`open=12`). An entity's aggregate is derived from its ID: `ord_n`, `cus_n` and `prd_n` are aggregates;
+`pay_n_k` and `shp_n` live in `ord_n`.
+
+Environment: `WEB_HOST` (default `127.0.0.1`), `WEB_PORT` (default `5173`), `WEB_API_URL` (default
+`http://<API_HOST>:<API_PORT>`).

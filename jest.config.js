@@ -7,6 +7,8 @@ module.exports = {
   testEnvironment: 'node',
   roots: ['<rootDir>/packages', '<rootDir>/apps'],
   testMatch: ['**/test/**/*.test.ts'],
+  // apps/web is tested by Vitest (pnpm test:web), in a browser-like environment Jest is not set up for.
+  testPathIgnorePatterns: ['/node_modules/', '<rootDir>/apps/web/'],
   transform: {
     '^.+\\.ts$': ['ts-jest', { tsconfig: '<rootDir>/tsconfig.jest.json' }],
   },

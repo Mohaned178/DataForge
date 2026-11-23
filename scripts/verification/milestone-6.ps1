@@ -187,8 +187,8 @@ Test-Case 'MV-6.3' 'The integration suite against Kafka and PostgreSQL' {
     $integration = Invoke-Pnpm @('test:integration')
     Assert-Exit $integration 0 'pnpm test:integration'
     # Counts as of Milestone 7 (D-7.3).
-    Assert-Match $integration.Text 'Test Suites:\s+9 passed, 9 total' 'integration suites'
-    Assert-Match $integration.Text 'Tests:\s+96 passed, 96 total' 'integration tests'
+    Assert-Match $integration.Text 'Test Suites:\s+10 passed, 10 total' 'integration suites'
+    Assert-Match $integration.Text 'Tests:\s+112 passed, 112 total' 'integration tests'
 }
 
 Test-Case 'MV-6.4' 'Start the API and check its health' {

@@ -19,7 +19,7 @@ apps/
   cli/           @dataforge/cli          Command-line interface (Milestone 1)
   consumer/      @dataforge/consumer     The reference consumer as a standalone process (Milestone 4)
   api/           @dataforge/api          HTTP API: NestJS + Prisma + PostgreSQL; scenarios, runs, chaos profiles, test executions (Milestones 6-7)
-  web/           @dataforge/web          React + Vite (Milestones 8-9, planned)
+  web/           @dataforge/web          React + Vite: run history, report explorer, timelines; read-only (Milestone 8; launch and editing in Milestone 9)
 scenarios/                               Example scenario definitions
 chaos-profiles/                          Example chaos profiles
 scripts/verification/                    Per-milestone self-checks of the manual verification
@@ -30,7 +30,7 @@ docs/                                    Specification, architecture, roadmap, f
 Dependency direction (enforced by package dependencies, plus ESLint for the four `packages/*`):
 
 ```text
-apps/web            ──HTTP──▶ apps/api (planned)
+apps/web            ──HTTP (/api, forwarded by the web server)──▶ apps/api; imports nothing from the packages (lint-enforced)
 apps/api            ──▶ execution, kafka, validation, targets, chaos, core, NestJS, Prisma ──▶ PostgreSQL
 apps/cli            ──▶ execution, kafka, validation, targets, chaos, core
 packages/execution  ──▶ kafka, validation, targets, chaos, core   (starts apps/consumer as a child process)
@@ -153,6 +153,25 @@ uses, so a run downloaded from the API is a run directory the CLI accepts.
 | `src/executions/prisma-execution-store.ts` | Execution status and results in PostgreSQL: claim, complete, await the actual state, fail, recover; attempts by `unnest`. |
 | `src/executions/executions.service.ts` | Start, history, attempts, report, findings, submission of an external pipeline's state, files rebuilt and checked. |
 | `src/executions/attempt-rows.ts`, `report-rows.ts` | Attempts and findings to rows and back; a row that is no longer an attempt is an integrity error. |
+
+## Inside `@dataforge/web`
+
+A single-page application that only reads the HTTP API. Its server (`vite preview`, or `vite` in
+development) serves the built files and forwards `/api/*` to the API with the prefix removed; the UI's own
+routes (`/runs`, `/executions/:id`) and the API's paths are therefore never confused, and the API needs no
+CORS. ESLint keeps `@dataforge/*`, `node:*`, NestJS, Prisma and KafkaJS out of `apps/web/src`: what the UI
+knows about the system is what the API says, described by its own Zod schemas.
+
+| Module | Responsibility |
+| --- | --- |
+| `src/api/client.ts` | `getJson`: one request, three kinds of failure (`ApiUnreachable`, `ApiError` with its integrity-error case, `ResponseShapeError` with the path of the field), every response validated. |
+| `src/api/schemas.ts` | Zod schemas of only what the pages read; lenient about fields it does not read. The integration suite parses real API responses with them (`apps/api/integration/web-contract.test.ts`). |
+| `src/api/endpoints.ts` | The one module that knows the API's paths; paged loaders for an aggregate's events and attempts. |
+| `src/hooks/use-resource.ts` | Loads one resource: aborts a superseded request, never shows its answer, keeps the previous data while reloading. |
+| `src/lib/timeline.ts` | Joins an aggregate's canonical events with its delivery attempts by `eventId` and classifies each event (out of order, lost, duplicated, retried, delayed, late, reordered) by the delivery summary's own definition. |
+| `src/lib/entity.ts` | Entity to aggregate: `pay_n_k` and `shp_n` belong to `ord_n`. |
+| `src/pages/` | Run history and run, execution history, the report explorer (delivery, validation, findings, window findings, files), and the aggregate drill-down (lanes diagram and the two timelines). |
+| `src/test/` | Fixtures captured from real executions (`scripts/capture-fixtures.mjs`) and the `fetch` stub the page tests use. |
 
 ## Data flow (Milestone 1)
 
@@ -321,6 +340,23 @@ GET /executions, /:id, /:id/attempts, /:id/report, /:id/findings, /:id/window-fi
 GET /executions/:id/files/<name> ◀─ rebuilt from rows and documents, compared with the recorded checksum
 ```
 
+## Data flow (Milestone 8)
+
+```text
+browser ── /executions/<id>/aggregates/ord_000045?finding=18 ──▶ web server: the app (index.html, assets)
+   │
+   └─ fetch /api/executions/<id>, /api/runs/<run>/events?aggregateId=..., /api/executions/<id>/attempts?aggregateId=...
+          │ web server removes "/api" and forwards (502 with no body when the API is down)
+          ▼
+      HTTP API (Milestones 6-7), unchanged
+          │ JSON, validated by src/api/schemas.ts (a missing or changed field is reported by path)
+          ▼
+      buildTimeline(events, attempts):  canonical lane (version order) + delivery lane (delivery order)
+                                        joined by eventId; out of order = a later version reached the target first
+          ▼
+      the lanes diagram and the two tables; the finding it was opened from comes from /findings?offset=<ordinal>&limit=1
+```
+
 ## Key concepts
 
 - **Canonical event**: a business fact in the simulated world, identified by `eventId`, positioned
@@ -358,6 +394,9 @@ GET /executions/:id/files/<name> ◀─ rebuilt from rows and documents, compare
 - **External pipeline**: a consumer DataForge did not start, on the user's topic and consumer group.
   DataForge produces the plan to the topic, waits for zero lag on the group, and validates the actual
   state the user submits.
+- **Lanes**: the drill-down's two orders of one aggregate. The top lane is the canonical events in version
+  order, the bottom lane the deliveries in delivery order; a line joins an event to each of its deliveries.
+  Crossing lines are events that reached the target out of order; an event with no line was lost.
 - **Engine version**: `ENGINE_VERSION` names the generation algorithm. Any change in output for the
   same scenario and seed requires a version bump; the golden test enforces this.
 

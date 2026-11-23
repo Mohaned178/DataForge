@@ -11,8 +11,8 @@ The value is not the generated data. It is finding data-processing bugs in a rep
 > **Status:** Milestones 1 (deterministic simulation core + CLI), 2 (chaos delivery planner), 3
 > (validation engine + reference targets, offline end to end), 4 (Kafka delivery + out-of-process
 > target), 5 (event-time windows and late data), 6 (persistence with PostgreSQL + Prisma, and the
-> API foundation with NestJS) and 7 (test executions through the API) of 10 are approved. See
-> [docs/ROADMAP.md](docs/ROADMAP.md).
+> API foundation with NestJS), 7 (test executions through the API) and 8 (web UI: run history and report
+> explorer) of 10 are approved. See [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Requirements
 
@@ -169,13 +169,31 @@ the consumer process), or your own pipeline: `{type: "external", topic: "...", g
 DataForge then produces to your topic, waits until your consumer group has committed every record,
 and validates the state your pipeline submits with `POST /executions/:id/actual-state`.
 
+## Web UI
+
+A read-only web UI over the API: run and execution history, the report of an execution (verdict, findings
+per category, root causes, every finding with its causes), and, from a finding, the **canonical timeline of an
+order, customer or product next to its delivery timeline**, so a wrong result can be traced to the delivery
+that caused it (a reordered event, a duplicate, a lost one). It needs the API running and some data in it.
+
+```powershell
+pnpm build
+pnpm api        # window 1: http://127.0.0.1:3000
+pnpm web        # window 2: http://127.0.0.1:5173 (the built UI; /api is forwarded to the API)
+```
+
+`pnpm web:dev` serves the UI with hot reload for development. `WEB_HOST`, `WEB_PORT` and `WEB_API_URL` are
+in `.env.example`. The browser talks only to the web server, so the API needs no CORS and stays reachable from
+this machine only.
+
 ## Development
 
 ```powershell
-pnpm test        # all automated tests
+pnpm test        # all automated tests: the engine and the API (Jest), then the web UI (Vitest)
 pnpm typecheck   # strict TypeScript
 pnpm lint        # ESLint, including the determinism guard for packages/*
 pnpm check       # all three (no Docker needed)
+pnpm web:dev     # the web UI with hot reload
 pnpm test:integration   # build, then the Kafka and PostgreSQL integration tests (needs docker compose up -d --wait)
 ```
 
@@ -190,6 +208,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verification\milesto
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verification\milestone-5.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verification\milestone-6.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verification\milestone-7.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verification\milestone-8.ps1
 ```
 
 ## Milestone workflow (Claude Code)
@@ -216,6 +235,7 @@ packages/execution     @dataforge/execution: the steps of a test execution, shar
 apps/cli               @dataforge/cli: the dataforge command
 apps/consumer          @dataforge/consumer: the reference consumer as a standalone process
 apps/api               @dataforge/api: the HTTP API (NestJS, Prisma, PostgreSQL)
+apps/web               @dataforge/web: the web UI (React, Vite), read-only over the HTTP API
 compose.yaml           local Kafka broker (KRaft) and PostgreSQL
 scenarios/             example scenario definitions
 chaos-profiles/        example chaos profiles
@@ -231,6 +251,6 @@ docs/                  specification, architecture, roadmap, data formats, manua
 - [Architecture](docs/ARCHITECTURE.md)
 - [Data formats](docs/data-formats.md): scenario, events, expected state, manifest, chaos profile,
   delivery plan and summary, actual state, target run, Kafka record and logs, validation report,
-  database tables and HTTP API (runs, chaos profiles, test executions)
+  database tables, HTTP API (runs, chaos profiles, test executions) and the web UI's routes
 - [Roadmap](docs/ROADMAP.md)
 - [Architecture decision records](docs/adr/)
