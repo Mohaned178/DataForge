@@ -19,7 +19,8 @@ apps/
   cli/           @dataforge/cli          Command-line interface (Milestone 1)
   consumer/      @dataforge/consumer     The reference consumer as a standalone process (Milestone 4)
   api/           @dataforge/api          HTTP API: NestJS + Prisma + PostgreSQL; scenarios, runs, chaos profiles, test executions (Milestones 6-7)
-  web/           @dataforge/web          React + Vite: run history, report explorer, timelines; read-only (Milestone 8; launch and editing in Milestone 9)
+  web/           @dataforge/web          React + Vite: run history, report explorer, timelines (Milestone 8); scenario and profile editors, launch forms, live pages (Milestone 9)
+  e2e/           @dataforge/e2e          Playwright: a real browser drives the full flow against the real API, PostgreSQL and Kafka (Milestone 9)
 scenarios/                               Example scenario definitions
 chaos-profiles/                          Example chaos profiles
 scripts/verification/                    Per-milestone self-checks of the manual verification
@@ -31,6 +32,7 @@ Dependency direction (enforced by package dependencies, plus ESLint for the four
 
 ```text
 apps/web            ──HTTP (/api, forwarded by the web server)──▶ apps/api; imports nothing from the packages (lint-enforced)
+apps/e2e            ──a browser──▶ apps/web ──▶ apps/api (starts its own copies, with its own database)
 apps/api            ──▶ execution, kafka, validation, targets, chaos, core, NestJS, Prisma ──▶ PostgreSQL
 apps/cli            ──▶ execution, kafka, validation, targets, chaos, core
 packages/execution  ──▶ kafka, validation, targets, chaos, core   (starts apps/consumer as a child process)
@@ -156,7 +158,8 @@ uses, so a run downloaded from the API is a run directory the CLI accepts.
 
 ## Inside `@dataforge/web`
 
-A single-page application that only reads the HTTP API. Its server (`vite preview`, or `vite` in
+A single-page application over the HTTP API: it reads (Milestone 8) and, since Milestone 9, writes through the same endpoints as any
+other client. Its server (`vite preview`, or `vite` in
 development) serves the built files and forwards `/api/*` to the API with the prefix removed; the UI's own
 routes (`/runs`, `/executions/:id`) and the API's paths are therefore never confused, and the API needs no
 CORS. ESLint keeps `@dataforge/*`, `node:*`, NestJS, Prisma and KafkaJS out of `apps/web/src`: what the UI
@@ -164,14 +167,29 @@ knows about the system is what the API says, described by its own Zod schemas.
 
 | Module | Responsibility |
 | --- | --- |
-| `src/api/client.ts` | `getJson`: one request, three kinds of failure (`ApiUnreachable`, `ApiError` with its integrity-error case, `ResponseShapeError` with the path of the field), every response validated. |
+| `src/api/client.ts` | `getJson` and `postJson`: one request, three kinds of failure (`ApiUnreachable`, `ApiError` with its messages and its integrity-error case, `ResponseShapeError` with the path of the field), every response validated; a write also returns the HTTP status (201 and 200 differ for versions). |
 | `src/api/schemas.ts` | Zod schemas of only what the pages read; lenient about fields it does not read. The integration suite parses real API responses with them (`apps/api/integration/web-contract.test.ts`). |
-| `src/api/endpoints.ts` | The one module that knows the API's paths; paged loaders for an aggregate's events and attempts. |
+| `src/api/endpoints.ts` | The one module that knows the API's paths: `api` (reads, with paged loaders for an aggregate's events and attempts) and `writes` (validate, create, add a version, start a run or an execution, submit an actual state). |
 | `src/hooks/use-resource.ts` | Loads one resource: aborts a superseded request, never shows its answer, keeps the previous data while reloading. |
+| `src/hooks/use-live-resource.ts` | The same for a resource that is still moving (a queued or running run or execution): asks again one second after each answer, never two requests in flight, keeps its data through a failed refresh, stops by itself when the resource ends. |
+| `src/hooks/use-submit.ts` | One write at a time: a second submit while one is in flight is a no-op (a ref guards it), the failure is kept for the form. |
 | `src/lib/timeline.ts` | Joins an aggregate's canonical events with its delivery attempts by `eventId` and classifies each event (out of order, lost, duplicated, retried, delayed, late, reordered) by the delivery summary's own definition. |
 | `src/lib/entity.ts` | Entity to aggregate: `pay_n_k` and `shp_n` belong to `ord_n`. |
-| `src/pages/` | Run history and run, execution history, the report explorer (delivery, validation, findings, window findings, files), and the aggregate drill-down (lanes diagram and the two timelines). |
+| `src/pages/` | Run history and run, execution history, the report explorer (delivery, validation, findings, window findings, files), and the aggregate drill-down (lanes diagram and the two timelines); `documents/` (the list, detail and editor pages of scenarios and chaos profiles) and `launch/` (the run and execution forms). |
+| `src/documents/kinds.ts` | Scenarios and chaos profiles as one kind of thing: their words, routes, endpoints and templates, so each page is written once. |
+| `src/components/DocumentEditor.tsx` | The JSON editor: the browser checks syntax (line and column), the API's dry run checks the rest after a pause, Save is enabled only for text the API has just accepted. |
+| `src/components/ExternalSubmission.tsx` | The file pickers an execution awaiting an external pipeline offers; only the JSON syntax is checked in the browser. |
+| `src/lib/launch.ts` | The request bodies of the run and execution forms, as pure functions: the seed as typed, only the options a target takes. |
+| `src/templates.ts` | The repository's own `scenarios/*.json` and `chaos-profiles/*.json`, imported as text: the editors' starting points. |
 | `src/test/` | Fixtures captured from real executions (`scripts/capture-fixtures.mjs`) and the `fetch` stub the page tests use. |
+
+## Inside `@dataforge/e2e`
+
+The end-to-end suite (Milestone 9). `playwright.config.ts` starts everything it tests: `support/start-api.js` recreates the
+scratch database `dataforge_e2e_test` (the API's own recreate script, which refuses any other name) and then runs the built API
+in the same process, on port 3209; `vite preview` serves the built UI on 5309. Every setting is passed explicitly, so a developer's
+`.env` cannot point the suite at real data, and no running server is reused. `tests/full-flow.spec.ts` drives Chromium through the
+flow, in order, one database for the file. It needs PostgreSQL, Kafka and a browser; it is not part of `pnpm check`.
 
 ## Data flow (Milestone 1)
 
@@ -357,6 +375,26 @@ browser ── /executions/<id>/aggregates/ord_000045?finding=18 ──▶ web s
       the lanes diagram and the two tables; the finding it was opened from comes from /findings?offset=<ordinal>&limit=1
 ```
 
+## Data flow (Milestone 9)
+
+```text
+editor text ── JSON.parse in the browser (syntax error: line and column, nothing sent)
+   │ after 400 ms of rest
+   ▼
+POST /scenarios/validate | /chaos-profiles/validate     the create endpoint's schema and pipe, stores nothing
+   │  400: the same problems saving would give      200: the resolved definition and its hash
+   ▼
+Save (enabled only for the text just accepted) ─▶ POST /scenarios | /chaos-profiles | .../versions
+   │  201 a new document or version ─▶ its page ("Saved as version n")      200 identical ─▶ "nothing new was stored"
+   ▼
+run form ── buildRunRequest (the seed as typed) ─▶ POST /runs ─▶ /runs/:id        (live while queued or running)
+execution form ── buildExecutionRequest (only the options the target takes) ─▶ POST /executions ─▶ /executions/:id
+   │  external target: awaiting_actual_state ─▶ file pickers ─▶ POST /executions/:id/actual-state ─▶ the report
+   ▼
+useLiveResource: GET, wait for the answer, one second, GET ... until the status is not queued or running;
+                 a failed refresh keeps the data and shows a notice; unmounting aborts the request in flight
+```
+
 ## Key concepts
 
 - **Canonical event**: a business fact in the simulated world, identified by `eventId`, positioned
@@ -394,6 +432,8 @@ browser ── /executions/<id>/aggregates/ord_000045?finding=18 ──▶ web s
 - **External pipeline**: a consumer DataForge did not start, on the user's topic and consumer group.
   DataForge produces the plan to the topic, waits for zero lag on the group, and validates the actual
   state the user submits.
+- **Dry run**: `POST /scenarios/validate` and `POST /chaos-profiles/validate` answer what saving would, without storing anything: the same
+  schema and validation pipe, so an invalid document gets the identical `400`.
 - **Lanes**: the drill-down's two orders of one aggregate. The top lane is the canonical events in version
   order, the bottom lane the deliveries in delivery order; a line joins an event to each of its deliveries.
   Crossing lines are events that reached the target out of order; an event with no line was lost.

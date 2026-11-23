@@ -14,6 +14,8 @@ export function Layout() {
           <nav aria-label="Main">
             <NavLink to="/executions">Executions</NavLink>
             <NavLink to="/runs">Runs</NavLink>
+            <NavLink to="/scenarios">Scenarios</NavLink>
+            <NavLink to="/chaos-profiles">Chaos profiles</NavLink>
           </nav>
         </div>
       </header>

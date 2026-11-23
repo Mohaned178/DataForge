@@ -1,6 +1,8 @@
 # ADR-0013: The web UI: a read-only React app over the API, a proxy under /api, schemas at the boundary
 
-Status: Accepted (Milestone 8).
+Status: Accepted (Milestone 8). Milestone 9 ([ADR-0014](0014-web-ui-configure-launch-and-end-to-end.md)) made the UI write and
+refresh itself; decisions 2, 3 and 5 to 10 below still hold (the proxy, the boundary and the schemas, the address as
+state, the diagram, the timelines, the tests at the boundary).
 
 ## Context
 
@@ -90,4 +92,5 @@ Vitest in jsdom and type-aware ESLint on `.tsx` all pass; `vite preview` serves 
 - The web server is `vite preview`: fine on this machine, not a production server (Milestone 10).
 - The pinned Jest totals of the earlier self-checks that pin the integration run (Milestones 4, 6, 7) changed
   from 9 suites and 96 tests to 10 and 112, because of the contract test.
-- The UI does not refresh by itself: a queued or running execution is refreshed with Reload.
+- The UI did not refresh by itself in this milestone: a queued or running execution was refreshed with Reload. Milestone 9
+  replaced that with live pages (ADR-0014, decision 10).

@@ -23,3 +23,12 @@ export interface ScenarioVersionView extends VersionSummaryView {
   /** The resolved scenario: the submitted document with every default filled in. */
   readonly definition: ScenarioConfig;
 }
+
+/** The answer of POST /scenarios/validate: the document is valid; nothing was stored. */
+export interface ScenarioValidationView {
+  readonly valid: true;
+  readonly name: string;
+  readonly scenarioHash: string;
+  /** The resolved scenario: the submitted document with every default filled in, as a stored version would hold it. */
+  readonly definition: ScenarioConfig;
+}

@@ -16,6 +16,7 @@
     "test:web": "pnpm --filter @dataforge/web test",
     "check": "pnpm typecheck && pnpm lint && pnpm test",
     "test:integration": "pnpm build && node --experimental-vm-modules --disable-warning=ExperimentalWarning node_modules/jest/bin/jest.js --config jest.integration.config.js --runInBand",
+    "test:e2e": "pnpm build && pnpm --filter @dataforge/e2e test",
     "db:migrate": "pnpm --filter @dataforge/api db:migrate",
     "api": "node apps/api/dist/main.js",
     "web": "pnpm --filter @dataforge/web run preview",

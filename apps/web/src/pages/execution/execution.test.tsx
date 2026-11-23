@@ -1,4 +1,4 @@
-import { screen, waitFor, within } from '@testing-library/react';
+import { act, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, test, vi } from 'vitest';
 import { fixtures } from '../../test/fixtures';
@@ -202,16 +202,75 @@ describe('an execution that has not completed', () => {
     ...overrides,
   });
 
-  test('a running execution says so, makes no report request, and Reload asks again', async () => {
-    const user = userEvent.setup();
-    const stub = stubApi([{ path: `/executions/${ids.pass}`, respond: ok(unfinished({ status: 'running' })) }]);
-    renderApp(`/executions/${ids.pass}`);
-    expect(await screen.findByText(/This execution is running/)).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'Reload' }));
-    await waitFor(() => {
-      expect(stub.calls).toEqual([`/executions/${ids.pass}`, `/executions/${ids.pass}`]);
-    });
-    expect(screen.queryByRole('heading', { name: 'Validation report' })).not.toBeInTheDocument();
+  test('a running execution says so, makes no report request, follows itself to the report and then stops asking', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      let answers = 0;
+      const stub = stubApi([
+        {
+          path: `/executions/${ids.pass}`,
+          respond: () => {
+            answers += 1;
+            return jsonResponse(answers < 3 ? unfinished({ status: 'running' }) : fixtures.execution.pass);
+          },
+        },
+        ...completedRoutes('pass').slice(1),
+      ]);
+      renderApp(`/executions/${ids.pass}`);
+      expect(await screen.findByText(/This execution is running/)).toBeInTheDocument();
+      expect(screen.getByText(/this page updates by itself until it ends/)).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Reload' })).not.toBeInTheDocument();
+      expect(stub.calls).toEqual([`/executions/${ids.pass}`]);
+      expect(screen.queryByRole('heading', { name: 'Validation report' })).not.toBeInTheDocument();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2100);
+      });
+      expect(await screen.findByRole('heading', { name: 'Validation report' })).toBeInTheDocument();
+      expect(screen.queryByText(/This execution is running/)).not.toBeInTheDocument();
+      const asked = () => stub.calls.filter((call) => call === `/executions/${ids.pass}`).length;
+      expect(asked()).toBe(3);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10_000);
+      });
+      expect(asked()).toBe(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('a refresh that fails keeps the last data on screen, says so, and recovers by itself', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      let answers = 0;
+      stubApi([
+        {
+          path: `/executions/${ids.pass}`,
+          respond: () => {
+            answers += 1;
+            return answers === 2 ? proxyDownResponse() : jsonResponse(unfinished({ status: 'running' }));
+          },
+        },
+      ]);
+      renderApp(`/executions/${ids.pass}`);
+      expect(await screen.findByText(/This execution is running/)).toBeInTheDocument();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1100);
+      });
+      expect(await screen.findByText(/The latest refresh failed/)).toBeInTheDocument();
+      expect(screen.getByText(/This execution is running/)).toBeInTheDocument();
+      expect(screen.queryByRole('heading', { name: 'The API is not reachable' })).not.toBeInTheDocument();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1100);
+      });
+      await waitFor(() => {
+        expect(screen.queryByText(/The latest refresh failed/)).not.toBeInTheDocument();
+      });
+      expect(screen.getByText(/This execution is running/)).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   test('an execution waiting for a pipeline says what it needs and how to give it', async () => {

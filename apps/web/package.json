@@ -2,7 +2,7 @@
   "name": "@dataforge/web",
   "version": "0.1.0",
   "private": true,
-  "description": "The DataForge web UI (React + Vite): run and execution history and the report explorer, read-only over the HTTP API.",
+  "description": "The DataForge web UI (React + Vite) over the HTTP API: run and execution history, the report explorer, scenario and chaos profile editors, launch forms and live pages.",
   "scripts": {
     "dev": "vite",
     "build": "tsc -p tsconfig.json --noEmit && vite build",

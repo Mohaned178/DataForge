@@ -325,3 +325,65 @@ export const windowFindingsSchema = z.object({
   offset: count,
 });
 export type WindowFindings = z.output<typeof windowFindingsSchema>;
+
+// ---- scenarios and chaos profiles (Milestone 9) ----------------------------------------------------
+
+/** The part of a stored version both kinds of document share: the hash that names its content. */
+const versionSummaryShape = { version: z.number(), createdAt: timestamp };
+
+const scenarioSummaryShape = { id: z.string(), name: z.string(), createdAt: timestamp, latestVersion: count };
+const chaosProfileSummaryShape = scenarioSummaryShape;
+
+export const scenarioListSchema = z.object({ scenarios: z.array(z.object(scenarioSummaryShape)) });
+export type ScenarioList = z.output<typeof scenarioListSchema>;
+
+export const scenarioViewSchema = z.object({
+  ...scenarioSummaryShape,
+  versions: z.array(z.object({ ...versionSummaryShape, scenarioHash: z.string() })),
+});
+export type ScenarioView = z.output<typeof scenarioViewSchema>;
+
+/** A stored version: `definition` is the resolved document, every default filled in. */
+export const scenarioVersionSchema = z.object({
+  ...versionSummaryShape,
+  scenarioId: z.string(),
+  scenarioName: z.string(),
+  scenarioHash: z.string(),
+  definition: z.record(z.string(), z.unknown()),
+});
+export type ScenarioVersion = z.output<typeof scenarioVersionSchema>;
+
+export const chaosProfileListSchema = z.object({ chaosProfiles: z.array(z.object(chaosProfileSummaryShape)) });
+export type ChaosProfileList = z.output<typeof chaosProfileListSchema>;
+
+export const chaosProfileViewSchema = z.object({
+  ...chaosProfileSummaryShape,
+  versions: z.array(z.object({ ...versionSummaryShape, profileHash: z.string() })),
+});
+export type ChaosProfileView = z.output<typeof chaosProfileViewSchema>;
+
+export const chaosProfileVersionSchema = z.object({
+  ...versionSummaryShape,
+  chaosProfileId: z.string(),
+  chaosProfileName: z.string(),
+  profileHash: z.string(),
+  definition: z.record(z.string(), z.unknown()),
+});
+export type ChaosProfileVersion = z.output<typeof chaosProfileVersionSchema>;
+
+/** The answers of the dry-run endpoints: the document is valid, and this is what a stored version would hold. */
+export const scenarioValidationSchema = z.object({
+  valid: z.literal(true),
+  name: z.string(),
+  scenarioHash: z.string(),
+  definition: z.record(z.string(), z.unknown()),
+});
+export type ScenarioValidation = z.output<typeof scenarioValidationSchema>;
+
+export const chaosProfileValidationSchema = z.object({
+  valid: z.literal(true),
+  name: z.string(),
+  profileHash: z.string(),
+  definition: z.record(z.string(), z.unknown()),
+});
+export type ChaosProfileValidation = z.output<typeof chaosProfileValidationSchema>;

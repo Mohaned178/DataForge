@@ -23,7 +23,12 @@ export function ExecutionsPage() {
 
   return (
     <>
-      <h1>Executions</h1>
+      <div className="title-row">
+        <h1>Executions</h1>
+        <Link className="button primary" to="/executions/new">
+          New execution
+        </Link>
+      </div>
       <p className="lede">
         Test executions: one run, delivered under one chaos profile and seed to one target, then validated. Newest first.
       </p>
@@ -38,7 +43,7 @@ export function ExecutionsPage() {
           list.executions.length === 0 ? (
             <p className="empty">
               No executions{filtered ? ' match these filters' : ' yet'}. Start one through the API: <code>POST /executions</code> with a run, a chaos
-              profile, a chaos seed and a target.
+              profile, a chaos seed and a target, or <Link to="/executions/new">start one here</Link>.
             </p>
           ) : (
             <>

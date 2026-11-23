@@ -78,7 +78,7 @@ pnpm test:integration
   applied.` `\dt` lists 14 tables, among them the eight new ones: `chaos_profile`,
   `chaos_profile_version`, `delivery_attempt`, `execution_file`, `test_execution`,
   `validation_finding`, `validation_report`, `window_finding`. The suite ends with
-  `Test Suites: 10 passed, 10 total` and `Tests: 112 passed, 112 total` (about two minutes).
+  `Test Suites: 11 passed, 11 total` and `Tests: 132 passed, 132 total` (about two minutes).
 - **How to read it:** `down -v` deletes the database volume and the Kafka topics, so the cases below
   start empty and the numbers they show are exact. The suite uses its own database (`dataforge_test`).
 - **Failure:** a migration error, missing tables, or a failing integration test.

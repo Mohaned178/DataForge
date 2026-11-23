@@ -16,7 +16,7 @@ whenever implementation changes the plan. The workflow is driven by the `/datafo
 | 6 | Persistence (PostgreSQL + Prisma) + API foundation (NestJS) | **Approved 2026-11-23** |
 | 7 | Test executions through the API | **Approved 2026-11-23** |
 | 8 | Web UI: run history and report explorer | **Approved 2026-11-23** |
-| 9 | Web UI: configure and launch + Playwright end-to-end | Planned |
+| 9 | Web UI: configure and launch + Playwright end-to-end | **Approved 2026-11-23** |
 | 10 | Hardening and scale | Planned |
 
 ## Why this order
@@ -1170,8 +1170,229 @@ Self-check re-run before approval: 15 of 15 in PowerShell 7.6 (full), 14 of 14 i
 
 ## Milestone 9: Web UI: configure and launch
 
-Scenario and chaos profile editors (reusing the Zod schemas), launch and live monitoring, Playwright
-end-to-end tests of the full flow.
+**Objective.** Do the whole test from the browser: author a scenario and a chaos profile, generate a run,
+launch a test execution against any target the API supports, watch it live until it ends, and land on the
+report Milestone 8 built. A Playwright suite drives that flow in a real browser against the real API,
+PostgreSQL and Kafka, so "the UI works" is something a command proves, not a claim. The engine does not
+change; the API gains exactly two read-only validation endpoints.
+
+**Included.**
+
+- **Two dry-run endpoints** (the only API change): `POST /scenarios/validate` and `POST
+  /chaos-profiles/validate`. Same body as the create endpoints, same schema, same validation pipe, so an
+  invalid body gets **exactly the 400 the create endpoint gives** (by construction, and a test compares
+  them). A valid one answers `200 { valid: true, name, scenarioHash | profileHash, definition }` (the
+  resolved document, every default filled) and **stores nothing**. A real create is the only thing that
+  writes.
+- **Editors** for scenarios and chaos profiles: a JSON text editor, not a visual builder (spec 11 excludes
+  visual scenario builders). Start from a blank document or from one of the repository's example files (the
+  UI imports `scenarios/*.json` and `chaos-profiles/*.json` itself, so a template is never a copy that can
+  drift). The text is parsed in the browser (a syntax error shows its line and column) and, once it parses,
+  validated by the API after a short pause: the problems are listed with their paths exactly as the API
+  words them, or the resolved definition and its hash are shown. Save creates the scenario (or profile), or a
+  new immutable version of an existing one; saving a document identical to an existing version says so
+  (`200`, the existing version) instead of pretending to create one. A name that is taken (`409`) is shown at
+  the editor.
+- **Pages** (routes):
+  - `/scenarios`, `/scenarios/new`, `/scenarios/:id` (its versions with hash and creation time, any version's
+    resolved definition, "New version", "New run"), `/scenarios/:id/versions/new` (the editor prefilled from the
+    latest version);
+  - `/chaos-profiles`, `/chaos-profiles/new`, `/chaos-profiles/:id`, `/chaos-profiles/:id/versions/new` (the same,
+    "New execution" instead of "New run");
+  - `/runs/new`: scenario, version (default latest) and seed; `POST /runs`;
+  - `/executions/new`: a succeeded run, a chaos profile and version, the chaos seed and the target: a
+    reference target (`correct` or `naive`; transport `memory`, or `kafka` with partitions, speed and
+    timeout) or an **external pipeline** (topic, consumer group, speed, timeout); `POST /executions`.
+    Options that do not apply are not sent: the memory transport rejects `partitions`, `speed` and
+    `timeoutSeconds`, and the form omits them. Query parameters prefill the forms (`?scenarioId=`,
+    `?runId=`, `?chaosProfileId=`), so "New run" on a scenario and "New execution" on a run are links.
+  - The navigation gains **Scenarios** and **Chaos profiles**; the run, execution and scenario pages gain
+    their launch buttons.
+- **Launching.** The seed is sent as the text typed (a large whole number never goes through `Number`); the
+  submit button is disabled while the request is in flight (two identical requests are two runs, D-6.1);
+  the API's `400` messages are shown at the form, with their paths; on success the UI opens the new run or
+  execution.
+- **Live monitoring.** A run or execution page that is `queued` or `running` refreshes itself (one second
+  after the previous answer arrived, never stacking requests: the API's event loop is busy while it
+  generates or delivers in memory) and stops when the resource ends. A failed refresh keeps the last data on
+  screen with a "the API is not reachable, retrying" notice and recovers by itself. The "Reload" instruction
+  of Milestone 8 goes away; the elapsed time is shown while it waits.
+- **External pipelines.** An execution that is `awaiting_actual_state` offers file pickers for
+  `actual-state.json` (and `actual-windows.json` for a windowed profile) and a Submit button
+  (`POST /executions/:id/actual-state`): the files are parsed in the browser (syntax only; the contracts
+  are the API's) and the API's problems are listed with their paths. The page then follows the execution to
+  its report.
+- **Playwright end-to-end suite** (`apps/e2e`, `pnpm test:e2e`): starts its own API and web server (own
+  database `dataforge_e2e_test`, own ports 3209 and 5309, never reusing a running server), then drives
+  Chromium through the full flow (below). It is **not** part of `pnpm check`: it needs PostgreSQL, Kafka and
+  a browser download.
+- **Out of scope.** Visual builders, form-based scenario editors, deleting or editing a version (versions
+  are immutable), server-sent events or WebSockets, charts, authentication, the API serving the UI. The
+  external-pipeline flow is covered by component tests (the form), the Milestone 7 integration tests (the
+  API) and the manual guide; the Playwright suite does not start an external pipeline.
+
+**Architectural decisions** (ADR-0014).
+
+| Question | Options | Choice |
+| --- | --- | --- |
+| Editor style | a form per scenario and profile; a JSON text editor; a code-editor component (Monaco, CodeMirror) | **A JSON text editor** (a plain textarea). A form for 30 scenario fields is a visual builder in all but name (spec 11), and a code-editor component is a large dependency for what a monospace box and a list of problems do. The document is the same file the CLI takes, so what the UI saves can be run by the CLI and the other way round. |
+| "Reusing the Zod schemas" (this roadmap's first wording) | import the core and chaos schemas into the browser; validate on the server | **Validate on the server, with the same schema.** ADR-0013's boundary keeps `@dataforge/*` out of the web app: the scenario schema hashes with `node:crypto`, and a lint rule would have to be loosened to let browser code import the engine. Two dry-run endpoints reuse the very pipe and schema of the create endpoints, so there is one definition and no drift. The browser keeps only a JSON syntax check. |
+| Dry run: how an invalid body is reported | `200 { valid: false, issues }` with its own formatter; the same `400` as the create endpoint | **The same `400`.** The identical code path gives identical messages by construction, and the UI reads one error shape for every write. A test posts one bad body to both endpoints and compares the responses. |
+| Live monitoring | polling; server-sent events; WebSockets | **Polling**, chained after each answer, one second while queued or running. The API reports a status, not progress, so there is nothing to push; SSE or WebSockets would add an API surface and a connection to manage for the same information, and a request-per-second against a status row is cheap. |
+| Data loading | adopt TanStack Query now (ADR-0013 left it open); keep the hook | **Keep the hook**, add a live variant. Still no shared cache and no polling beyond two pages; mutations are two small functions. Revisit if a third consumer of cached data appears. |
+| After a launch | stay on the form; open the created resource | **Open the created resource.** Its page is live, so the user watches the run or execution without searching for it, and the URL is the thing to share. |
+| Templates | copies in the web app; the API serves them; import the repository's files | **Import the repository's files** (Vite `?raw`), so the templates are the files in `scenarios/` and `chaos-profiles/` and the golden hashes hold for a template saved unchanged. |
+| End-to-end tooling | Playwright (spec 5); Cypress; none | **Playwright 1.65.1** (`@playwright/test`), in its own workspace app so Vitest, Jest and type-aware ESLint never see its specs. It wants Chromium revision 1255; this machine's cache holds 1243 and 1248, so `playwright install chromium-headless-shell` downloads once (checked 2026-11-23 against `playwright-core`'s `browsers.json`). |
+| End-to-end isolation | the development database and servers; own database, ports and processes | **Own database (`dataforge_e2e_test`), own ports (3209, 5309), own processes**, configured by explicit environment so a developer's `.env` can never point the suite at real data; servers are started with `node` directly (not through `pnpm`, which leaves orphans on Windows) and never reused. |
+
+**Dependencies.** The Milestone 6 and 7 API (`POST /scenarios`, `/scenarios/:id/versions`,
+`POST /chaos-profiles`, `/chaos-profiles/:id/versions`, `POST /runs`, `POST /executions`,
+`POST /executions/:id/actual-state`, and every read the pages already use), plus `GET /scenarios`, `GET
+/scenarios/:id`, `GET /scenarios/:id/versions/:version` and the chaos-profile equivalents (built in
+Milestones 6 and 7, not read by the UI until now). `apps/api` (the two validation endpoints), `apps/web`
+(everything else), `scenarios/` and `chaos-profiles/` (templates), `scripts/verification/external-pipeline.js`
+(the guide's external pipeline). New third-party dependency: `@playwright/test` 1.65.1 (the end-to-end
+runner the specification names), dev only, in `apps/e2e`.
+
+**Code and documentation changes.** API: the two validate routes and their views; web: the write path of
+the client (`postJson`), schemas of the new reads and writes, the live-resource hook, the submit hook, the
+editor, the launch forms, the new pages, navigation and empty states; `apps/e2e` (new: config, global
+setup, specs, tsconfig); root `package.json` (`test:e2e`), CI job, `.env.example` (nothing new for
+users; the suite sets its own); ADR-0014; `data-formats.md` (the two endpoints, the UI's new routes and
+query parameters); `ARCHITECTURE.md` (the web section no longer says read-only; `apps/e2e`; the data flow);
+README; the stale "read-only" wording of the web package, ADR-0013's consequences and the Milestone 8
+guide; manual verification guide and self-check; the self-checks of Milestones 4, 6, 7 and 8 pin test
+totals that this milestone changes, so they are updated and **re-run** this time.
+
+**Automated tests.**
+
+- API integration (`pnpm test:integration`, real PostgreSQL): both validate endpoints (a valid body answers
+  `200` with the hash the create endpoint then records, stores nothing, an invalid body gets a `400`
+  byte-identical to the create endpoint's, the same unknown-field and loss-rule cases the create tests
+  use); the contract test also parses the scenario and chaos-profile responses the UI now reads.
+- Web component tests (`pnpm test:web`, Vitest, `fetch` stubbed at the boundary): the write path (success,
+  `400` with messages, `409`, unreachable, a non-JSON proxy error); the live hook (polls only while the
+  status is `queued` or `running`, waits for each answer, keeps data through a failed refresh and recovers,
+  stops on unmount); the editor (a syntax error with line and column, validation after the pause, problems
+  with paths, the resolved definition, a template, save as new scenario, as a new version, an identical
+  version, a taken name); the run form (version defaults, the typed seed is sent as text, the API's
+  messages at the form, one request on a double click, navigation to the new run); the execution form (only
+  succeeded runs, every target kind's exact request body, memory without Kafka options, Kafka and external
+  fields, prefill from the query string); scenario and profile lists and detail pages; the run and
+  execution pages refreshing while `queued` or `running` and not afterwards; the external submission
+  (two files, a syntax error, the API's problems, success follows the execution); navigation and empty
+  states.
+- End-to-end (`pnpm test:e2e`, Playwright, real browser): see acceptance criteria 6 to 9.
+
+**Acceptance criteria.**
+
+1. `POST /scenarios/validate` and `POST /chaos-profiles/validate` accept a valid document without storing
+   anything, and answer an invalid one with the same `400` as the create endpoint.
+2. A scenario or chaos profile can be created from the editor, starting blank or from an example; an
+   invalid document is refused with the path of each problem before anything is saved; a changed document
+   becomes a new immutable version; an identical one is reported as the existing version.
+3. A run can be launched from the form (scenario, version, seed) and an execution from the form (run,
+   profile, chaos seed, any target kind); the seed reaches the API exactly as typed, the options a target
+   does not take are not sent, and a double click starts one run.
+4. A queued or running run or execution updates by itself until it ends, never has two refresh requests in
+   flight, keeps showing its last data while the API is unreachable and recovers when it returns.
+5. An execution awaiting an external pipeline's state accepts the files from the browser and follows the
+   execution to its report; a file that is not JSON, or an actual state the API refuses, is reported with
+   the paths.
+6. **End to end, the full flow** (Playwright): register the small scenario from its template and the
+   `none` and `spec-example` profiles from theirs; launch a run with seed 42 and watch it reach
+   `succeeded`; its `events.jsonl` checksum is the CLI's pinned `01b57d64...`.
+7. **End to end, a failing test is found:** launch the `naive` target under `spec-example` with chaos seed
+   7; the page goes from queued to completed by itself with verdict FAIL, 486 attempts and 48 findings, and
+   a finding opens the drill-down of its order. Launching `correct` under `none` ends PASS.
+8. **End to end, refusals:** an invalid scenario shows its problems and cannot be saved; a launch against a
+   run that has not succeeded is refused and explained.
+9. **End to end, Kafka:** an execution through Kafka launched from the form completes with the Kafka run and
+   a partition and offset on the drill-down.
+10. `pnpm check` needs no infrastructure and no browser, the CLI's outputs and every golden hash are
+    unchanged, and the web app still imports nothing from the engine (lint-enforced).
+
+**Manual verification.** `docs/manual-verification/milestone-9.md` (MV-9.1 to MV-9.15: install and checks; services, the
+migration and the integration suite; the Playwright suite; start the API and the UI, empty pages and navigation; the dry-run
+endpoints; the scenario editor; the chaos profile editor; a run launched from the form, the same bytes as the command line;
+executions launched from the form; versions; refusals; live monitoring and the API going away; your own pipeline through the
+UI; a pipeline that is not there; the import boundary). Self-check: `scripts/verification/milestone-9.ps1` (own database
+`dataforge_selfcheck`, own API and web ports 3109 and 5209, own work directory, its own Kafka topic and group per run): 15 of
+15 in PowerShell 7.6.10 (full) and 14 of 14 (MV-9.1 skipped by `-SkipInstall`) in Windows PowerShell 5.1.26100 on 2026-11-23,
+with Docker Desktop, the Compose services and headless Microsoft Edge. A script cannot click, so the self-check runs the
+Playwright suite (11 of 11, inside both runs) as the clicking, makes the API calls the browser makes (including the body the
+external-state file picker sends) and checks the text of rendered pages; layout and colour are for your eyes.
+
+What was run, and how (nothing here is claimed beyond it):
+
+- The Playwright suite also passed with a decoy `.env` at the repository root pointing at the development database, port 3000
+  and a dead Kafka port: 11 of 11, the development database's row counts unchanged (2 scenarios, 2 runs, 8 executions, 3 profiles).
+- The guide's literal command blocks were run once in one Windows PowerShell 5.1 session, with these substitutions: the API and
+  the web server ran as background processes on a scratch database (`dataforge_guide_test`) instead of the development one;
+  `docker compose down -v` was skipped (it would delete the development database's volume), so `pnpm db:migrate` printed no
+  pending migrations instead of "successfully applied"; `Start-Process "<url>"` recorded the URLs; and the browser clicks of
+  each case were replaced by the API calls the browser makes. Every printed value matched the guide.
+- The claims that need a real browser and that no suite covers were checked once with a scratch Playwright script outside the
+  repository (20 of 20 checks): the real API stopped and restarted under a live page, the file pickers of the external-pipeline
+  form (a file that is not JSON, a state the API refuses, a valid state), a real double click, a missing topic, and screenshots of
+  the new pages in light, dark and at phone width. The API was stopped by killing its process (a background process cannot
+  receive Ctrl+C), not with Ctrl+C. The CI job (`e2e`) has not run: it needs a push.
+- The self-checks of Milestones 4, 6, 7 and 8 were re-run in PowerShell 7 with `-SkipInstall` after their pinned integration
+  totals changed: all exit 0.
+
+**Implementation notes** (changes to the plan above, with the reason).
+
+- The roadmap's first wording, "reusing the Zod schemas", did not survive contact with ADR-0013: the web app may not
+  import the engine, and the scenario schema hashes with `node:crypto`. Validation stays on the server (the two dry-run
+  endpoints, which reuse the create endpoints' schema and pipe), and the browser checks only JSON syntax (ADR-0014,
+  decisions 2 and 3).
+- V8 words most JSON syntax errors with a position but not "Unexpected token '}'..." ones, which carry only a snippet; the
+  editor finds the line and column of those by bisecting for the shortest prefix that already has a mistake, so every
+  syntax error is reported with its place.
+- A hint inside a `<label>` becomes part of the control's accessible name ("SeedAny text or whole number..."), which broke
+  `getByLabel` in the tests and would read badly in a screen reader. Hints are now tied with `aria-describedby`
+  (`components/Field.tsx`, and the same for the target radio buttons).
+- `POST /executions` takes `timeoutSeconds` inside `target`, not at the top level as Milestone 7's prose said; the form
+  builds the body from the code's strict schemas, and the contract test posts what it builds.
+- The new integration suite first deadlocked on `TRUNCATE` in a full run: on start-up the runners resume what an earlier
+  suite left unfinished, and truncating at the same time deadlocks. The suite now waits for both runners to go idle first,
+  as the other suites do.
+- Looking at the pages rendered by a real browser (the Milestone 8 note said layout had not been looked at): the header's
+  four links wrapped onto two lines at phone width and the elapsed-time notice began with "waiting for 0 ms". The header
+  now wraps under the brand, and a wait under a second reads "less than a second".
+- Playwright's own `install` removed two cached browsers (`chromium-1248` and `chromium_headless_shell-1248` in
+  `%LOCALAPPDATA%\ms-playwright`) that no registered Playwright installation used, when this milestone first downloaded its
+  browser: a side effect outside the repository, which could not be undone (another project that wants them downloads them
+  again). `pnpm --filter @dataforge/e2e install-browser` now installs through `support/install-browser.js`, which sets
+  `PLAYWRIGHT_SKIP_BROWSER_GC`, so it only adds.
+- A real run of the guide's external-pipeline step found a trap: a `finish` file left from an earlier attempt makes the next
+  pipeline finish at once, and the execution fails with "has no active member". The guide's first command clears the folder.
+- The end-to-end suite grew from the six to nine tests of the plan to eleven: an empty installation, a new version of a
+  scenario, the live page surviving an unreachable API, and a double click that starts one run were added. The refusal of a
+  run that has not succeeded uses a burst of six specification-sized runs (the last waits about nine seconds); the
+  Milestone 7 self-check needs only one because it posts at once, but a browser form takes longer.
+- Totals changed by this milestone: Jest unchanged (38 suites, 451 tests); Vitest 12 files and 181 tests (was 7 and 108);
+  integration 11 suites and 132 tests (was 10 and 112: the validation suite and seven contract tests). The self-checks of
+  Milestones 4, 6, 7 and 8 pin the integration totals and were updated, and re-run (below). The Milestone 8 self-check and
+  guide also changed where a running execution used to say "Reload".
+- Dry-run values worth knowing: the small scenario with seed 42 has 472 events and the command line's checksums
+  (`01b57d64...`, `3546842d...`, `f642fb41...`); a paced execution (`speed 5000`) takes about 35 s; with the real API
+  stopped under a live page, the notice reads "The API could not be reached: 502 Bad Gateway", and the execution, run again
+  after the restart, completes in about 35 s without a click.
+
+**Product-owner decisions** (2026-11-23, the recommendations accepted):
+
+- D-9.1: scenarios and chaos profiles are edited as JSON text, not in forms (spec 11 excludes visual builders); a form-based
+  editor can be added later without changing what is saved (ADR-0014, decision 1).
+- D-9.2: validation stays on the server, with two read-only dry-run endpoints (ADR-0014, decisions 2 and 3).
+- D-9.3: live monitoring is one-second polling, not server-sent events (ADR-0014, decision 10).
+- D-9.4: `pnpm test:e2e` is separate from `pnpm check`: it needs Docker and a one-time browser download (123.8 MiB); CI
+  has its own job (ADR-0014, decision 13).
+- D-9.5: the external-pipeline flow is not in the Playwright suite (component tests, the Milestone 7 integration tests, the
+  guide and a one-off real-browser run cover it) (ADR-0014, decision 15).
+- D-9.6: the pinned totals and the "Reload" wording of Milestones 4 to 8 were updated, as D-5.2 did for Milestone 4.
+
+**Approved** 2026-11-23.
 
 ## Milestone 10: Hardening and scale
 
@@ -1214,3 +1435,9 @@ None at the moment.
 | With several partitions, root-cause hints still come from the plan. | A naive-target finding caused by cross-partition interleaving can be reported as "not explained by delivery". | One partition is the default, which equals the plan exactly. Hints from the consumer's processing log are a possible later addition. |
 | Plans are built in memory (about 19,000 attempts for the spec-sized scenario, planned in about 0.4 s). | Memory use near the scenario limits (100,000 orders, a few hundred thousand attempts). | Profile with generation in Milestone 10. |
 | In-memory generation. | Memory use near the scenario limits. | Limits enforced by the schema; profile in Milestone 10 before optimizing. |
+| The editors validate through the API. | With the API stopped, a document that parses cannot be checked or saved ("The API is not reachable"). | By design (ADR-0014, decision 2): one schema, no drift. The browser still reports syntax errors with their place. |
+| Live pages poll once a second. | Several open tabs on one running execution each ask once a second; the API's event loop is busy while it generates or delivers in memory. | Each tab waits for its last answer before asking again, and stops when the resource ends; a status row is a cheap read. SSE is the alternative if it ever matters (D-9.3). |
+| The elapsed time of a waiting page is the browser's clock minus the API's `requestedAt`. | A browser on another machine with a skewed clock shows a wrong wait (the page still updates correctly). | The API is reachable from this machine only (D-6.2), so both clocks are the same machine's; the number is only a hint. |
+| The end-to-end suite's refusal test needs a run that is still queued when the form is submitted. | On a much faster machine the burst of six specification-sized runs could finish before the click. | The test asserts what it saw (the form lists the run as queued or running) and fails with that message; raise the burst if it ever does. |
+| The browser download of the Playwright suite (123.8 MiB, 288 MB on disk) comes from Playwright's CDN. | `pnpm test:e2e` cannot run offline on a machine that has not downloaded it. | One command (`pnpm --filter @dataforge/e2e install-browser`), documented in MV-9.3, which keeps other projects' cached browsers (`PLAYWRIGHT_SKIP_BROWSER_GC`); `pnpm check` and `pnpm test:integration` need no browser. |
+| `pnpm test:e2e` rebuilds everything first. | About a minute of builds before the minute of tests. | Same as `pnpm test:integration`; run the Playwright command directly after a build to skip it. |

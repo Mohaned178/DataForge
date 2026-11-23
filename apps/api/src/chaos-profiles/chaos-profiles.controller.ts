@@ -1,7 +1,7 @@
 import { Body, Controller, Get, HttpCode, HttpStatus, Param, Post, Res } from '@nestjs/common';
-import { chaosProfileSchema, type ChaosProfile } from '@dataforge/chaos';
+import { chaosProfileHash, chaosProfileSchema, type ChaosProfile } from '@dataforge/chaos';
 import { idParam, positiveIntParam } from '../http/params';
-import type { ChaosProfileSummaryView, ChaosProfileVersionView, ChaosProfileView } from './chaos-profile-views';
+import type { ChaosProfileSummaryView, ChaosProfileValidationView, ChaosProfileVersionView, ChaosProfileView } from './chaos-profile-views';
 import { ChaosProfilesService } from './chaos-profiles.service';
 
 /** The part of the HTTP response the versions endpoint sets: 201 for a new version, 200 for an existing one. */
@@ -18,6 +18,17 @@ export class ChaosProfilesController {
   @HttpCode(HttpStatus.CREATED)
   create(@Body({ schema: chaosProfileSchema }) profile: ChaosProfile): Promise<ChaosProfileView> {
     return this.profiles.create(profile);
+  }
+
+  /**
+   * A dry run of POST /chaos-profiles: the same schema and the same validation pipe, so an invalid profile gets
+   * exactly the 400 the create endpoint gives (the loss rule included); a valid one is answered with its
+   * resolved definition and hash, and nothing is stored.
+   */
+  @Post('validate')
+  @HttpCode(HttpStatus.OK)
+  validate(@Body({ schema: chaosProfileSchema }) profile: ChaosProfile): ChaosProfileValidationView {
+    return { valid: true, name: profile.name, profileHash: chaosProfileHash(profile), definition: profile };
   }
 
   @Get()

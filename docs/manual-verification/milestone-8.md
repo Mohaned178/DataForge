@@ -7,7 +7,8 @@ Every case from MV-8.2 on needs Docker Desktop. Cases that say "Open" need a web
 
 What is new in this milestone:
 
-- **A web UI** (`apps/web`, React + Vite) over the HTTP API. It is **read-only**: it shows what the API
+- **A web UI** (`apps/web`, React + Vite) over the HTTP API. In this milestone it is **read-only** (Milestone 9 added
+  launching, editors and live pages; where this guide says otherwise, the Milestone 9 behaviour is noted): it shows what the API
   stores, it does not create anything. You create data with the API (as in Milestone 7) and look at it
   in the browser. The API did not change.
 - **Run history and run detail:** the simulated worlds, their expected state, their files, their stored
@@ -79,7 +80,7 @@ pnpm test:integration
 ```
 
 - **Expected:** `pnpm db:migrate` ends `All migrations have been successfully applied.` The suite ends
-  with `Test Suites: 10 passed, 10 total` and `Tests: 112 passed, 112 total` (about two to three
+  with `Test Suites: 11 passed, 11 total` and `Tests: 132 passed, 132 total` (about two to three
   minutes); the new file is `apps/api/integration/web-contract.test.ts`.
 - **How to read it:** `down -v` deletes the database volume and the Kafka topics, so the cases below
   start empty and the numbers they show are exact. The suite uses its own database (`dataforge_test`).
@@ -458,7 +459,7 @@ pnpm lint
 ## MV-8.15 — A running execution: its view, and a timeline that is not available yet
 
 - **Verifies:** an execution that has not finished says so, and its timelines are refused until it has delivered;
-  Reload shows the result.
+  the page follows it to the result by itself (Milestone 9; this case used a Reload button in Milestone 8).
 - **Preconditions:** MV-8.4 (the variables and `Wait-Execution`).
 
 ```powershell
@@ -476,22 +477,23 @@ $slow | Format-List status, verdict, @{n='ms';e={$_.kafka.durationMs}}
   After about 35 seconds `Wait-Execution` returns: `status completed`, `verdict PASS`, `ms` above 30000 (the delivery
   was paced at 5000 simulated milliseconds per real millisecond).
 - **Look for:** the first page (opened while it runs) has **Status** `running`, no verdict, and the notice "This execution is
-  running. DataForge runs one execution at a time in the background. Use Reload to see its progress."; there is no
-  validation report. The second page says **Not available yet**. Click **Reload** on the first page once the PowerShell
-  command has returned (or open it again): **Verdict** `PASS`, "The target ended in the expected state.", and the
-  timeline of `ord_000088` now opens, with Kafka offsets (`partition 0, offset 27`...).
+  running: waiting for N s. DataForge runs one execution at a time in the background, and this page updates by itself
+  until it ends."; there is no validation report. The second page says **Not available yet**. Once the PowerShell
+  command has returned, the first page has already changed by itself (without a click): **Verdict** `PASS`, "The target
+  ended in the expected state.". Open the second page again: the timeline of `ord_000088` now opens, with Kafka offsets
+  (`partition 0, offset 27`...).
 - **How to read it:** a running execution has no results yet, so a page cannot show them; **Not available yet** is the
-  API refusing (409), not a fault. The UI does not refresh by itself (live monitoring is Milestone 9).
-- **Failure:** the execution is not shown as running while it runs, its timeline opens early, or Reload does not
-  show the verdict.
+  API refusing (409), not a fault. A page about a run or execution that has not ended refreshes itself (Milestone 9).
+- **Failure:** the execution is not shown as running while it runs, its timeline opens early, or the first page does not
+  change to the verdict by itself.
 ---
 
 ## Known limitations
 
 - The views of an execution waiting for an external pipeline (`awaiting_actual_state`) and of one that failed are
   covered by automated tests only; the guide shows `running` and the "not available yet" refusal (MV-8.15).
-- The UI is read-only and does not refresh by itself: use **Reload** or **Try again** (live monitoring,
-  launching executions and editing profiles are Milestone 9).
+- Milestone 8 was read-only and did not refresh by itself. Milestone 9 added live pages, launching, and the editors;
+  **Try again** on an error page still asks again.
 - Pages show what is stored after checking that each row is still a valid event or attempt; only the file
   downloads compare with the recorded checksums (a changed value that is still valid shows on a page, and
   is caught by the download).

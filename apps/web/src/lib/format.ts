@@ -28,6 +28,11 @@ export function formatDuration(ms: number): string {
   return restHours === 0 ? `${days} d` : `${days} d ${restHours} h`;
 }
 
+/** How long something has been waiting, in whole seconds: "less than a second", "9 s", "1 min 5 s". */
+export function formatWaited(ms: number): string {
+  return ms < 1000 ? 'less than a second' : formatDuration(Math.floor(ms / 1000) * 1000);
+}
+
 /** Simulation time: milliseconds since the scenario epoch, as T+[d ]hh:mm:ss.mmm. */
 export function formatSimTime(ms: number): string {
   const pad = (value: number, width: number) => String(value).padStart(width, '0');

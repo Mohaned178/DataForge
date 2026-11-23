@@ -3,12 +3,13 @@ import { MemoryRouter, useLocation } from 'react-router';
 import { vi } from 'vitest';
 import { AppRoutes } from '../App';
 
-/** One stubbed API route: the path (below /api) and, optionally, query parameters it must carry. */
+/** One stubbed API route: the method (GET unless said), the path (below /api) and, optionally, query parameters it must carry. */
 export interface StubRoute {
+  readonly method?: 'GET' | 'POST';
   readonly path: string;
   /** Parameters the request must have with these values; others are ignored. */
   readonly query?: Readonly<Record<string, string>>;
-  readonly respond: (url: URL) => Response | Promise<Response>;
+  readonly respond: (url: URL, body: unknown) => Response | Promise<Response>;
 }
 
 export function jsonResponse(body: unknown, status = 200): Response {
@@ -32,6 +33,8 @@ export function ok(body: unknown): () => Response {
 export interface ApiStub {
   /** Every request the page made, as "/path?query" below /api, in order. */
   readonly calls: string[];
+  /** The same requests with their method and parsed JSON body (undefined for a request without one). */
+  readonly requests: { readonly method: string; readonly path: string; readonly body: unknown }[];
 }
 
 /**
@@ -40,21 +43,28 @@ export interface ApiStub {
  */
 export function stubApi(routes: readonly StubRoute[]): ApiStub {
   const calls: string[] = [];
+  const requests: ApiStub['requests'][number][] = [];
   vi.stubGlobal(
     'fetch',
-    vi.fn((input: RequestInfo | URL): Promise<Response> => {
+    vi.fn((input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       const target = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
       const url = new URL(target, 'http://web.test');
       const path = url.pathname.replace(/^\/api/, '');
+      const method = init?.method ?? 'GET';
+      const body: unknown = typeof init?.body === 'string' ? JSON.parse(init.body) : undefined;
       calls.push(`${path}${url.search}`);
+      requests.push({ method, path: `${path}${url.search}`, body });
       const route = routes.find(
-        (candidate) => candidate.path === path && Object.entries(candidate.query ?? {}).every(([name, value]) => url.searchParams.get(name) === value),
+        (candidate) =>
+          (candidate.method ?? 'GET') === method &&
+          candidate.path === path &&
+          Object.entries(candidate.query ?? {}).every(([name, value]) => url.searchParams.get(name) === value),
       );
-      if (route === undefined) return Promise.reject(new Error(`Unstubbed API request: ${path}${url.search}`));
-      return Promise.resolve(route.respond(url));
+      if (route === undefined) return Promise.reject(new Error(`Unstubbed API request: ${method} ${path}${url.search}`));
+      return Promise.resolve(route.respond(url, body));
     }),
   );
-  return { calls };
+  return { calls, requests };
 }
 
 /** Shows the router's current path and query, so a test can assert where a click led. */

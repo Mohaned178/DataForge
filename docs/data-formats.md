@@ -625,6 +625,7 @@ Unknown fields and query parameters are rejected.
 | --- | --- | --- |
 | `GET /health` | | `200 {status: "ok", database: "up", engineVersion}`; `503` with `database: "down"` while PostgreSQL is unreachable. |
 | `POST /scenarios` | A scenario file (the format above) | `201` the scenario with version 1; `400` invalid; `409` a scenario with that name exists. |
+| `POST /scenarios/validate` | A scenario file | A dry run of `POST /scenarios` (Milestone 9): `200 {valid: true, name, scenarioHash, definition}` with the resolved definition and the hash a stored version would get, storing nothing; an invalid file gets exactly the `400` the create endpoint gives (the same schema and validation pipe). A name that is taken is not checked: saving does that. |
 | `GET /scenarios` | | `200 {scenarios: [{id, name, createdAt, latestVersion}]}`, by name. |
 | `GET /scenarios/:id` | | `200 {id, name, createdAt, latestVersion, versions: [{version, scenarioHash, createdAt}]}`. |
 | `POST /scenarios/:id/versions` | A scenario file with the scenario's name | `201` a new version; `200` the existing version whose resolved definition is identical; `400` another name. |
@@ -662,6 +663,7 @@ JSON bodies may be up to 64 MB (a submitted actual state).
 | Method and path | Body or query | Answer |
 | --- | --- | --- |
 | `POST /chaos-profiles` | A chaos profile file (the format above) | `201` the profile with version 1; `400` invalid (paths, the loss rule included); `409` a profile with that name exists. |
+| `POST /chaos-profiles/validate` | A chaos profile file | A dry run of `POST /chaos-profiles` (Milestone 9): `200 {valid: true, name, profileHash, definition}`, storing nothing; an invalid profile (the loss rule included) gets exactly the `400` the create endpoint gives. |
 | `GET /chaos-profiles` | | `200 {chaosProfiles: [{id, name, createdAt, latestVersion}]}`, by name. |
 | `GET /chaos-profiles/:id` | | `200 {id, name, createdAt, latestVersion, versions: [{version, profileHash, createdAt}]}`. |
 | `POST /chaos-profiles/:id/versions` | A profile file with the profile's name | `201` a new version; `200` the identical existing one; `400` another name. |
@@ -710,25 +712,42 @@ An execution:
 }
 ```
 
-## Web UI (`pnpm web`, default `http://127.0.0.1:5173`, Milestone 8)
+## Web UI (`pnpm web`, default `http://127.0.0.1:5173`, Milestones 8 and 9)
 
-The UI is read-only and uses no endpoint beyond those above. The web server forwards `/api/<path>` to the API's
-`/<path>`; every other address is the application. Every view is an address; filters, pages and the open
-finding are query parameters.
+The UI uses no endpoint beyond those above. Milestone 8 only read them; Milestone 9 also writes: it creates
+scenarios, chaos profiles and their versions, starts runs and executions, and submits an external pipeline's
+state, through the same endpoints (and the two dry runs) as any other client. The web server forwards
+`/api/<path>` to the API's `/<path>`; every other address is the application. Every view is an address; filters,
+pages, the open finding and the launch forms' preselections are query parameters.
 
 | Route | Shows | Query parameters |
 | --- | --- | --- |
 | `/` | Redirects to `/executions`. | |
 | `/runs` | Run history, newest first. | `status`, `scenarioId`, `offset` |
-| `/runs/:runId` | The run, its expected state and files, its executions, its stored canonical events. | `type`, `aggregateId`, `fromSequence` (events) |
+| `/runs/new` | The run form: scenario, version (latest by default) and seed. `POST /runs`, then opens the run. | `scenarioId` (preselects the scenario) |
+| `/runs/:runId` | The run, its expected state and files, its executions, its stored canonical events. A run that is queued or running refreshes itself. | `type`, `aggregateId`, `fromSequence` (events) |
 | `/executions` | Execution history, newest first. | `status`, `verdict`, `runId`, `chaosProfileId`, `offset` |
-| `/executions/:executionId` | The report explorer: summary, delivery, validation report, findings, window findings, files. | `category`, `entityType`, `entityId`, `offset`, `open` (finding ordinal); `wcategory`, `woffset`, `wopen` (window findings) |
+| `/executions/new` | The execution form: a run, a chaos profile and version, the chaos seed and the target (reference `correct` or `naive`, in memory or through Kafka; or an external pipeline). `POST /executions`, then opens the execution. | `runId`, `chaosProfileId` (preselect) |
+| `/executions/:executionId` | The report explorer: summary, delivery, validation report, findings, window findings, files. An execution that is queued or running refreshes itself; one awaiting an external pipeline's state offers the two files to submit. | `category`, `entityType`, `entityId`, `offset`, `open` (finding ordinal); `wcategory`, `woffset`, `wopen` (window findings) |
 | `/executions/:executionId/aggregates/:aggregateId` | The drill-down: canonical and delivery timelines of one aggregate. | `finding` or `windowFinding` (the ordinal it was opened from, 0-based), `event` (the focused event ID) |
 | `/executions/:executionId/events/:eventId` | Resolves the event's aggregate through `GET /executions/:id/attempts?eventId=` and redirects to the drill-down with `event` set. | the others are kept |
+
+| `/scenarios`, `/chaos-profiles` | The documents by name, with a button to create one. | |
+| `/scenarios/new`, `/chaos-profiles/new` | The JSON editor, from a blank document or one of the repository's example files. | |
+| `/scenarios/:id`, `/chaos-profiles/:id` | The versions with their hashes, one version's resolved definition, and the launch button ("New run", "New execution"). | `version` (the one shown), `saved` (the version just saved) |
+| `/scenarios/:id/versions/new`, `/chaos-profiles/:id/versions/new` | The editor, starting from the latest version's resolved definition. | |
 
 Finding ordinals are the API's `ordinal`: 0-based, in report order. The UI shows them 1-based ("finding 13" is
 `open=12`). An entity's aggregate is derived from its ID: `ord_n`, `cus_n` and `prd_n` are aggregates;
 `pay_n_k` and `shp_n` live in `ord_n`.
+
+The editors send the document as JSON to the dry run after the text has rested for 400 ms and only when the
+browser parsed it (a syntax error is shown with its line and column and nothing is sent); Save is enabled only for
+text the API has just accepted, and sends it to `POST /scenarios` (or `/chaos-profiles`) or, for a new version,
+to `.../versions`: `201` opens the document with `saved=<version>`, `200` says the document is identical to
+that version and stores nothing. A run request is `{scenarioId, version?, seed}` with the seed as typed text; an
+execution request is `{runId, chaosProfileId, chaosProfileVersion?, chaosSeed, target}` with only the options the
+target takes (the memory transport takes no `partitions`, `speed` or `timeoutSeconds`).
 
 Environment: `WEB_HOST` (default `127.0.0.1`), `WEB_PORT` (default `5173`), `WEB_API_URL` (default
 `http://<API_HOST>:<API_PORT>`).

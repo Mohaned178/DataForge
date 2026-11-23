@@ -71,16 +71,19 @@ async function failureOf(response: Response): Promise<ApiFailure> {
   return new ApiError(response.status, response.statusText || `HTTP ${response.status}`, []);
 }
 
-/** GET a JSON resource from the API and validate it against `schema`. */
-export async function getJson<S extends z.ZodType>(path: string, schema: S, signal?: AbortSignal): Promise<z.output<S>> {
+async function request(path: string, init: RequestInit): Promise<Response> {
   let response: Response;
   try {
-    response = await fetch(`${API_BASE}${path}`, { headers: { accept: 'application/json' }, ...(signal ? { signal } : {}) });
+    response = await fetch(`${API_BASE}${path}`, init);
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') throw error;
     throw new ApiUnreachable(error instanceof Error ? error.message : String(error));
   }
   if (!response.ok) throw await failureOf(response);
+  return response;
+}
+
+async function parseBody<S extends z.ZodType>(path: string, response: Response, schema: S): Promise<z.output<S>> {
   let body: unknown;
   try {
     body = await response.json();
@@ -95,6 +98,32 @@ export async function getJson<S extends z.ZodType>(path: string, schema: S, sign
     );
   }
   return parsed.data;
+}
+
+/** GET a JSON resource from the API and validate it against `schema`. */
+export async function getJson<S extends z.ZodType>(path: string, schema: S, signal?: AbortSignal): Promise<z.output<S>> {
+  const response = await request(path, { headers: { accept: 'application/json' }, ...(signal ? { signal } : {}) });
+  return parseBody(path, response, schema);
+}
+
+/** The answer of a write: the HTTP status says more than the body (201 created a version, 200 returned the existing one). */
+export interface Written<T> {
+  readonly status: number;
+  readonly data: T;
+}
+
+/**
+ * POST a JSON body and validate the answer against `schema`. A refusal is an `ApiError` whose `messages`
+ * are the API's own, one per problem, as "path: message".
+ */
+export async function postJson<S extends z.ZodType>(path: string, body: unknown, schema: S, signal?: AbortSignal): Promise<Written<z.output<S>>> {
+  const response = await request(path, {
+    method: 'POST',
+    headers: { accept: 'application/json', 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+    ...(signal ? { signal } : {}),
+  });
+  return { status: response.status, data: await parseBody(path, response, schema) };
 }
 
 /** A query string from the defined values only ("" when there are none). */

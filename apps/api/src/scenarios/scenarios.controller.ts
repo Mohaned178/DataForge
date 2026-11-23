@@ -1,7 +1,7 @@
 import { Body, Controller, Get, HttpCode, HttpStatus, Param, Post, Res } from '@nestjs/common';
-import { scenarioSchema, type ScenarioConfig } from '@dataforge/core';
+import { scenarioHash, scenarioSchema, type ScenarioConfig } from '@dataforge/core';
 import { idParam, positiveIntParam } from '../http/params';
-import type { ScenarioSummaryView, ScenarioVersionView, ScenarioView } from './scenario-views';
+import type { ScenarioSummaryView, ScenarioValidationView, ScenarioVersionView, ScenarioView } from './scenario-views';
 import { ScenariosService } from './scenarios.service';
 
 /** The part of the HTTP response the versions endpoint sets: 201 for a new version, 200 for an existing one. */
@@ -18,6 +18,17 @@ export class ScenariosController {
   @HttpCode(HttpStatus.CREATED)
   create(@Body({ schema: scenarioSchema }) config: ScenarioConfig): Promise<ScenarioView> {
     return this.scenarios.create(config);
+  }
+
+  /**
+   * A dry run of POST /scenarios: the same schema and the same validation pipe, so an invalid document gets
+   * exactly the 400 the create endpoint gives; a valid one is answered with its resolved definition and hash,
+   * and nothing is stored.
+   */
+  @Post('validate')
+  @HttpCode(HttpStatus.OK)
+  validate(@Body({ schema: scenarioSchema }) config: ScenarioConfig): ScenarioValidationView {
+    return { valid: true, name: config.name, scenarioHash: scenarioHash(config), definition: config };
   }
 
   @Get()

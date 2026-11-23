@@ -17,7 +17,12 @@ export function RunsPage() {
 
   return (
     <>
-      <h1>Runs</h1>
+      <div className="title-row">
+        <h1>Runs</h1>
+        <Link className="button primary" to="/runs/new">
+          New run
+        </Link>
+      </div>
       <p className="lede">Simulated worlds: one scenario version generated with one seed. Newest first.</p>
       <div className="filters">
         <FilterSelect label="Status" name="status" options={RUN_STATUSES} />
@@ -28,7 +33,7 @@ export function RunsPage() {
           list.runs.length === 0 ? (
             <p className="empty">
               No runs{status || scenarioId ? ' match these filters' : ' yet'}. Generate one through the API: <code>POST /runs</code> with a scenario
-              and a seed.
+              and a seed, or <Link to="/runs/new">start one here</Link>.
             </p>
           ) : (
             <>

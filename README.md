@@ -11,8 +11,9 @@ The value is not the generated data. It is finding data-processing bugs in a rep
 > **Status:** Milestones 1 (deterministic simulation core + CLI), 2 (chaos delivery planner), 3
 > (validation engine + reference targets, offline end to end), 4 (Kafka delivery + out-of-process
 > target), 5 (event-time windows and late data), 6 (persistence with PostgreSQL + Prisma, and the
-> API foundation with NestJS), 7 (test executions through the API) and 8 (web UI: run history and report
-> explorer) of 10 are approved. See [docs/ROADMAP.md](docs/ROADMAP.md).
+> API foundation with NestJS), 7 (test executions through the API), 8 (web UI: run history and report
+> explorer) and 9 (web UI: configure and launch, with Playwright end-to-end tests) of 10 are approved. See
+> [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Requirements
 
@@ -171,10 +172,14 @@ and validates the state your pipeline submits with `POST /executions/:id/actual-
 
 ## Web UI
 
-A read-only web UI over the API: run and execution history, the report of an execution (verdict, findings
+A web UI over the API. It **explores**: run and execution history, the report of an execution (verdict, findings
 per category, root causes, every finding with its causes), and, from a finding, the **canonical timeline of an
 order, customer or product next to its delivery timeline**, so a wrong result can be traced to the delivery
-that caused it (a reordered event, a duplicate, a lost one). It needs the API running and some data in it.
+that caused it (a reordered event, a duplicate, a lost one). And it **does the whole test from the browser**:
+JSON editors for scenarios and chaos profiles (checked by the API with the same schema saving uses, with
+immutable versions; start from the repository's examples), forms that start a run or an execution (a reference
+target in memory or through Kafka, or your own pipeline, to which you then submit the state it ended in), and
+pages that follow a queued or running run or execution by themselves until it ends. It needs the API running.
 
 ```powershell
 pnpm build
@@ -182,7 +187,9 @@ pnpm api        # window 1: http://127.0.0.1:3000
 pnpm web        # window 2: http://127.0.0.1:5173 (the built UI; /api is forwarded to the API)
 ```
 
-`pnpm web:dev` serves the UI with hot reload for development. `WEB_HOST`, `WEB_PORT` and `WEB_API_URL` are
+`pnpm web:dev` serves the UI with hot reload for development. `pnpm test:e2e` drives the whole flow in a real
+browser (Playwright) against its own copy of the API, web server and database; it needs Docker, and a browser
+downloaded once with `pnpm --filter @dataforge/e2e install-browser`. `WEB_HOST`, `WEB_PORT` and `WEB_API_URL` are
 in `.env.example`. The browser talks only to the web server, so the API needs no CORS and stays reachable from
 this machine only.
 
@@ -195,6 +202,7 @@ pnpm lint        # ESLint, including the determinism guard for packages/*
 pnpm check       # all three (no Docker needed)
 pnpm web:dev     # the web UI with hot reload
 pnpm test:integration   # build, then the Kafka and PostgreSQL integration tests (needs docker compose up -d --wait)
+pnpm test:e2e           # build, then the Playwright end-to-end suite (needs docker compose up -d --wait and the browser)
 ```
 
 Each milestone ships a manual verification guide (`docs/manual-verification/`) and a self-check that
@@ -209,6 +217,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verification\milesto
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verification\milestone-6.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verification\milestone-7.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verification\milestone-8.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\verification\milestone-9.ps1
 ```
 
 ## Milestone workflow (Claude Code)
@@ -235,7 +244,8 @@ packages/execution     @dataforge/execution: the steps of a test execution, shar
 apps/cli               @dataforge/cli: the dataforge command
 apps/consumer          @dataforge/consumer: the reference consumer as a standalone process
 apps/api               @dataforge/api: the HTTP API (NestJS, Prisma, PostgreSQL)
-apps/web               @dataforge/web: the web UI (React, Vite), read-only over the HTTP API
+apps/web               @dataforge/web: the web UI (React, Vite) over the HTTP API
+apps/e2e               @dataforge/e2e: the Playwright end-to-end suite
 compose.yaml           local Kafka broker (KRaft) and PostgreSQL
 scenarios/             example scenario definitions
 chaos-profiles/        example chaos profiles
@@ -251,6 +261,6 @@ docs/                  specification, architecture, roadmap, data formats, manua
 - [Architecture](docs/ARCHITECTURE.md)
 - [Data formats](docs/data-formats.md): scenario, events, expected state, manifest, chaos profile,
   delivery plan and summary, actual state, target run, Kafka record and logs, validation report,
-  database tables, HTTP API (runs, chaos profiles, test executions) and the web UI's routes
+  database tables, HTTP API (scenarios, runs, chaos profiles, test executions, the two dry runs) and the web UI's routes
 - [Roadmap](docs/ROADMAP.md)
 - [Architecture decision records](docs/adr/)

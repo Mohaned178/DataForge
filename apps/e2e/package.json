@@ -1,0 +1,14 @@
+{
+  "name": "@dataforge/e2e",
+  "version": "0.1.0",
+  "private": true,
+  "description": "End-to-end tests of the DataForge web UI: Playwright drives a real browser through the full flow against the real API, PostgreSQL and Kafka, each with its own database, ports and processes.",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "playwright test",
+    "install-browser": "node support/install-browser.js"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.65.1"
+  }
+}

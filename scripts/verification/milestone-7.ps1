@@ -197,8 +197,8 @@ Test-Case 'MV-7.2' 'Services, the migration and the integration suite' {
     Remove-Item Env:DATABASE_URL
     $integration = Invoke-Pnpm @('test:integration')
     Assert-Exit $integration 0 'pnpm test:integration'
-    Assert-Match $integration.Text 'Test Suites:\s+10 passed, 10 total' 'integration suites'
-    Assert-Match $integration.Text 'Tests:\s+112 passed, 112 total' 'integration tests'
+    Assert-Match $integration.Text 'Test Suites:\s+11 passed, 11 total' 'integration suites'
+    Assert-Match $integration.Text 'Tests:\s+132 passed, 132 total' 'integration tests'
 }
 
 Test-Case 'MV-7.3' 'Start the API, register a scenario and generate a run' {

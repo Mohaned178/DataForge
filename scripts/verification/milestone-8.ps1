@@ -268,8 +268,8 @@ Test-Case 'MV-8.2' 'Services, the migration and the integration suite' {
     Remove-Item Env:DATABASE_URL
     $integration = Invoke-Pnpm @('test:integration')
     Assert-Exit $integration 0 'pnpm test:integration'
-    Assert-Match $integration.Text 'Test Suites:\s+10 passed, 10 total' 'integration suites'
-    Assert-Match $integration.Text 'Tests:\s+112 passed, 112 total' 'integration tests'
+    Assert-Match $integration.Text 'Test Suites:\s+11 passed, 11 total' 'integration suites'
+    Assert-Match $integration.Text 'Tests:\s+132 passed, 132 total' 'integration tests'
 }
 
 Test-Case 'MV-8.3' 'Start the API and the UI; deep links and the /api proxy' {
@@ -430,7 +430,7 @@ Test-Case 'MV-8.15' 'A running execution: its view, and a timeline that is not a
     Assert-That ($now.status -eq 'running' -and $null -eq $now.verdict) "the paced execution is $($now.status) $($now.verdict) after 3 s"
     $attempts = Invoke-Http "/executions/$($slow.id)/attempts?aggregateId=ord_000088"
     Assert-That ($attempts.Status -eq 409) "attempts of a running execution: HTTP $($attempts.Status)"
-    Assert-Page "/executions/$($slow.id)" @('This execution is running', 'Reload') @('Validation report', 'Findings')
+    Assert-Page "/executions/$($slow.id)" @('This execution is running', 'this page updates by itself until it ends') @('Reload', 'Validation report', 'Findings')
     Assert-Page "/executions/$($slow.id)/aggregates/ord_000088" @('Not available yet')
     $done = Wait-Execution $slow.id 120
     Assert-That ($done.status -eq 'completed' -and $done.verdict -eq 'PASS' -and $done.kafka.durationMs -ge 30000) "paced execution: $($done.status) $($done.verdict) $($done.kafka.durationMs) ms"

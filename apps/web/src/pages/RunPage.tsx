@@ -4,14 +4,32 @@ import { api } from '../api/endpoints';
 import type { Run } from '../api/schemas';
 import { StatusBadge, VerdictBadge } from '../components/Badges';
 import { Facts, Section } from '../components/Controls';
+import { RefreshNotice } from '../components/RefreshNotice';
 import { ResourceView } from '../components/ResourceView';
+import { useLiveResource } from '../hooks/use-live-resource';
+import { useNow } from '../hooks/use-now';
 import { useResource } from '../hooks/use-resource';
-import { formatCount, formatMoney, formatSimTime, formatSpan, formatTimestamp, shortId } from '../lib/format';
+import { formatCount, formatMoney, formatSimTime, formatSpan, formatTimestamp, formatWaited, shortId } from '../lib/format';
 import { summarizePayload } from '../lib/payload';
 import { paramOf, withParams, wholeParamOf } from '../lib/query';
 import { describeTarget } from '../lib/target';
 
 const EVENT_PAGE = 25;
+
+/** A run that has not ended is still moving: this page follows it until it does. */
+export function isRunLive(run: Run): boolean {
+  return run.status === 'queued' || run.status === 'running';
+}
+
+function WaitingForRun({ run }: { run: Run }) {
+  const now = useNow(true);
+  const waited = Math.max(0, now - Date.parse(run.requestedAt));
+  return (
+    <p role="status" className="muted">
+      This run has not finished ({run.status}): waiting for {formatWaited(waited)}. This page updates by itself until it does.
+    </p>
+  );
+}
 
 function RunSummary({ run }: { run: Run }) {
   return (
@@ -33,11 +51,7 @@ function RunSummary({ run }: { run: Run }) {
           This run failed: {run.error}
         </p>
       ) : null}
-      {run.status === 'queued' || run.status === 'running' ? (
-        <p role="status" className="muted">
-          This run has not finished ({run.status}). Reload the page to refresh it.
-        </p>
-      ) : null}
+      {isRunLive(run) ? <WaitingForRun run={run} /> : null}
       {run.summary ? (
         <>
           <h3>Expected final state</h3>
@@ -272,13 +286,19 @@ function RunEvents({ run }: { run: Run }) {
 
 export function RunPage() {
   const { runId = '' } = useParams();
-  const resource = useResource(`run:${runId}`, (signal) => api.run(runId, signal));
+  const resource = useLiveResource(`run:${runId}`, (signal) => api.run(runId, signal), isRunLive);
   return (
     <>
       <p className="crumbs">
         <Link to="/runs">Runs</Link> / <code>{shortId(runId)}</code>
       </p>
-      <h1>Run</h1>
+      <div className="title-row">
+        <h1>Run</h1>
+        <Link className="button primary" to={`/executions/new?runId=${encodeURIComponent(runId)}`}>
+          New execution
+        </Link>
+      </div>
+      <RefreshNotice error={resource.refreshError} />
       <ResourceView resource={resource} what="this run">
         {(run) => (
           <>

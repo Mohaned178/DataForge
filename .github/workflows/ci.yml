@@ -55,3 +55,24 @@ jobs:
         run: docker compose logs
       - if: always()
         run: docker compose down
+
+  e2e:
+    # The Playwright suite: a real browser, the built web app, the API, and the same pinned Kafka broker and
+    # PostgreSQL as local development. It creates and drops its own database (dataforge_e2e_test).
+    name: end-to-end (Playwright, Kafka, PostgreSQL)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: docker compose up -d --wait
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @dataforge/e2e exec playwright install --with-deps chromium-headless-shell
+      - run: pnpm test:e2e
+      - if: failure()
+        run: docker compose logs
+      - if: always()
+        run: docker compose down

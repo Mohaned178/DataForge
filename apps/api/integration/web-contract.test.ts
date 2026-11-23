@@ -4,11 +4,31 @@
  * PostgreSQL and Kafka, answers, and every response must parse with those schemas. This is the test that
  * stops the UI's schemas and fixtures drifting from the API.
  */
-import { attemptsSchema, executionListSchema, executionSchema, findingsSchema, reportSchema, runEventsSchema, runListSchema, runSchema, windowFindingsSchema } from '../../web/src/api/schemas';
+import {
+  attemptsSchema,
+  chaosProfileListSchema,
+  chaosProfileValidationSchema,
+  chaosProfileVersionSchema,
+  chaosProfileViewSchema,
+  executionListSchema,
+  executionSchema,
+  findingsSchema,
+  reportSchema,
+  runEventsSchema,
+  runListSchema,
+  runSchema,
+  scenarioListSchema,
+  scenarioValidationSchema,
+  scenarioVersionSchema,
+  scenarioViewSchema,
+  windowFindingsSchema,
+} from '../../web/src/api/schemas';
 import type { Attempt, CanonicalEvent, Execution, Finding, WindowFinding } from '../../web/src/api/schemas';
 import { aggregateOfEntity } from '../../web/src/lib/entity';
+import { buildExecutionRequest, buildRunRequest, type ExecutionForm } from '../../web/src/lib/launch';
+import { parseProblem } from '../../web/src/lib/problems';
 import { buildTimeline, orderingOf } from '../../web/src/lib/timeline';
-import { chaosProfileId, clearDatabase, startApi, succeededRun, waitForExecution, type TestApi } from './support';
+import { chaosProfileId, clearDatabase, profileDocument, scenarioDocument, startApi, succeededRun, waitForExecution, waitForRun, type TestApi } from './support';
 import type { ExecutionView } from '../src/executions/execution-views';
 
 let api: TestApi;
@@ -185,5 +205,116 @@ describe('every finding can be followed to a timeline', () => {
       const page = attemptsSchema.parse((await api.http.get(`/executions/${executions.late.id}/attempts?eventId=${eventId}&limit=1`).expect(200)).body);
       expect(page.attempts[0]?.eventId).toBe(eventId);
     }
+  });
+});
+
+describe('the scenarios and chaos profiles the UI reads and writes', () => {
+  const small = () => JSON.parse(scenarioDocument('ecommerce-small')) as Record<string, unknown>;
+
+  it('scenarios: the list, a scenario, a version and the dry run parse, and the dry run hashes as the stored version', async () => {
+    const listed = scenarioListSchema.parse((await api.http.get('/scenarios').expect(200)).body).scenarios.find((scenario) => scenario.name === 'ecommerce-small');
+    expect(listed).toBeDefined();
+    const view = scenarioViewSchema.parse((await api.http.get(`/scenarios/${listed?.id ?? ''}`).expect(200)).body);
+    expect(view.versions.map((version) => version.version)).toEqual([1]);
+    const version = scenarioVersionSchema.parse((await api.http.get(`/scenarios/${view.id}/versions/1`).expect(200)).body);
+    expect(version.scenarioHash).toBe(view.versions[0]?.scenarioHash);
+    const dryRun = scenarioValidationSchema.parse((await api.http.post('/scenarios/validate').send(small()).expect(200)).body);
+    expect(dryRun.scenarioHash).toBe(version.scenarioHash);
+    expect(dryRun.definition).toEqual(version.definition);
+  });
+
+  it('scenarios: a new scenario is 201, a changed version is 201, an identical one is 200 with the same number', async () => {
+    const created = scenarioViewSchema.parse((await api.http.post('/scenarios').send({ formatVersion: 1, name: 'contract-extra' }).expect(201)).body);
+    expect(created.versions).toHaveLength(1);
+    const changed = scenarioVersionSchema.parse(
+      (await api.http.post(`/scenarios/${created.id}/versions`).send({ formatVersion: 1, name: 'contract-extra', description: 'changed' }).expect(201)).body,
+    );
+    expect(changed.version).toBe(2);
+    const same = scenarioVersionSchema.parse(
+      (await api.http.post(`/scenarios/${created.id}/versions`).send({ formatVersion: 1, name: 'contract-extra', description: 'changed' }).expect(200)).body,
+    );
+    expect(same.version).toBe(2);
+  });
+
+  it('chaos profiles: the same, with the profile hash and the loss rule refused by the dry run', async () => {
+    const profileId = await chaosProfileId(api, 'spec-example');
+    const listed = chaosProfileListSchema.parse((await api.http.get('/chaos-profiles').expect(200)).body).chaosProfiles.find((profile) => profile.id === profileId);
+    expect(listed?.name).toBe('spec-example');
+    const view = chaosProfileViewSchema.parse((await api.http.get(`/chaos-profiles/${profileId}`).expect(200)).body);
+    const version = chaosProfileVersionSchema.parse((await api.http.get(`/chaos-profiles/${profileId}/versions/1`).expect(200)).body);
+    const dryRun = chaosProfileValidationSchema.parse(
+      (await api.http.post('/chaos-profiles/validate').set('Content-Type', 'application/json').send(profileDocument('spec-example')).expect(200)).body,
+    );
+    expect(dryRun.profileHash).toBe(version.profileHash);
+    expect(view.versions[0]?.profileHash).toBe(version.profileHash);
+    const refused = await api.http
+      .post('/chaos-profiles/validate')
+      .send({ formatVersion: 1, name: 'loses', faults: { transientFailure: { rate: 0.1, failures: { min: 1, max: 5 }, maxRetries: 2 } } })
+      .expect(400);
+    const problems = (refused.body as { message: string[] }).message.map(parseProblem);
+    expect(problems.map((problem) => problem.path)).toEqual(['faults.transientFailure.failures.max']);
+  });
+
+  it("the API's problems read 'path: message', or just a message for an unknown key, as the UI splits them", async () => {
+    const refused = await api.http.post('/scenarios/validate').send({ ...small(), customers: { count: 'many' }, colour: 'blue' }).expect(400);
+    const problems = (refused.body as { message: string[] }).message.map(parseProblem);
+    expect(problems).toEqual([
+      { path: 'customers.count', message: 'Invalid input: expected number, received string' },
+      { message: 'Unrecognized key: "colour"' },
+    ]);
+  });
+});
+
+describe('the requests the launch forms build are the ones the API accepts', () => {
+  const form = (overrides: Partial<ExecutionForm>): ExecutionForm => ({
+    runId,
+    profileId: '',
+    profileVersion: '',
+    chaosSeed: '7',
+    target: 'correct',
+    transport: 'memory',
+    partitions: '',
+    speed: '',
+    timeoutSeconds: '',
+    topic: '',
+    groupId: '',
+    ...overrides,
+  });
+
+  it('a run: the seed typed as text arrives exactly as typed, and the new run is the one the UI shows', async () => {
+    const scenario = scenarioListSchema.parse((await api.http.get('/scenarios').expect(200)).body).scenarios.find((entry) => entry.name === 'ecommerce-small');
+    const built = buildRunRequest({ scenarioId: scenario?.id ?? '', version: '', seed: '9007199254740993' });
+    if (!built.ok) throw new Error(built.problems.join('; '));
+    const queued = runSchema.parse((await api.http.post('/runs').send(built.request).expect(202)).body);
+    expect(queued).toMatchObject({ status: 'queued', seed: '9007199254740993' });
+    const finished = await waitForRun(api, queued.id, 120_000);
+    expect(finished.status).toBe('succeeded');
+  });
+
+  it('an execution for each kind of target: memory, Kafka with options, and external', async () => {
+    const none = await chaosProfileId(api, 'none');
+    const cases: { label: string; overrides: Partial<ExecutionForm>; status: string }[] = [
+      { label: 'correct in memory', overrides: {}, status: 'completed' },
+      { label: 'naive in memory, with Kafka fields left over', overrides: { target: 'naive', partitions: '3', speed: '5000' }, status: 'completed' },
+      { label: 'correct through Kafka with partitions, speed and timeout', overrides: { transport: 'kafka', partitions: '2', speed: 'max', timeoutSeconds: '120' }, status: 'completed' },
+      { label: 'external pipeline on a topic that does not exist', overrides: { target: 'external', topic: 'no-such-topic-for-the-contract-test', groupId: 'no-such-group' }, status: 'failed' },
+    ];
+    for (const { label, overrides, status } of cases) {
+      const built = buildExecutionRequest(form({ profileId: none, ...overrides }));
+      if (!built.ok) throw new Error(`${label}: ${built.problems.join('; ')}`);
+      const queued = executionSchema.parse((await api.http.post('/executions').send(built.request).expect(202)).body);
+      expect({ label, status: queued.status }).toEqual({ label, status: expect.stringMatching(/^(queued|running)$/) as string });
+      const finished = await waitForExecution(api, queued.id);
+      expect({ label, status: finished.status }).toEqual({ label, status });
+    }
+  });
+
+  it('the API refuses what the form never sends: Kafka options on the memory transport, named by path', async () => {
+    const none = await chaosProfileId(api, 'none');
+    const refused = await api.http
+      .post('/executions')
+      .send({ runId, chaosProfileId: none, chaosSeed: '7', target: { type: 'reference', name: 'correct', transport: 'memory', partitions: 3, speed: 5000 } })
+      .expect(400);
+    expect((refused.body as { message: string[] }).message.map((message) => parseProblem(message).path).sort()).toEqual(['target.partitions', 'target.speed']);
   });
 });
